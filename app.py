@@ -12,7 +12,7 @@ st.set_page_config(page_title="Strategy& Value Creation: 3-Statement LBO Twin", 
 st.title("🌍 PE Value Creation: The 100-Day Plan & 3-Statement Twin")
 st.markdown("**Context:** Evaluating a 2-Year PE Hold. Simulating Network Optimization, Value Engineering, and Terms Optimization to generate a GAAP-compliant 3-Statement CFO rollout.")
 
-# --- 1. FALLBACK DEMO DATA (Wider Price Gaps, Realistic MOQs) ---
+# --- 1. FALLBACK DEMO DATA (Adjusted Poland FOB to trigger Dual-Sourcing) ---
 WEEKS = list(range(1, 105)) 
 
 DEFAULT_PRODUCTS = ["Smart Thermostat", "HD Security Camera", "Wi-Fi Mesh Router", "Smart Plug (4-Pack)"]
@@ -25,10 +25,10 @@ DEMAND_PARAMS = {
 }
 
 DEFAULT_ECO = {
-    "Smart Thermostat": {"price": 120.0, "unit_cbm": 0.005, "fe_fob": 32.0, "fe_lt": 10, "fe_moq": 3000, "ns_fob": 39.0, "ns_lt": 2, "ns_moq": 500},
-    "HD Security Camera": {"price": 85.0, "unit_cbm": 0.003, "fe_fob": 18.0, "fe_lt": 10, "fe_moq": 4000, "ns_fob": 26.0, "ns_lt": 2, "ns_moq": 1000},
-    "Wi-Fi Mesh Router": {"price": 150.0, "unit_cbm": 0.015, "fe_fob": 38.0, "fe_lt": 10, "fe_moq": 2000, "ns_fob": 52.0, "ns_lt": 2, "ns_moq": 500},
-    "Smart Plug (4-Pack)": {"price": 30.0, "unit_cbm": 0.002, "fe_fob": 6.5, "fe_lt": 10, "fe_moq": 8000, "ns_fob": 10.0, "ns_lt": 2, "ns_moq": 2000}
+    "Smart Thermostat": {"price": 120.0, "unit_cbm": 0.005, "fe_fob": 32.0, "fe_lt": 10, "fe_moq": 3000, "ns_fob": 37.0, "ns_lt": 2, "ns_moq": 500},
+    "HD Security Camera": {"price": 85.0, "unit_cbm": 0.003, "fe_fob": 18.0, "fe_lt": 10, "fe_moq": 4000, "ns_fob": 23.0, "ns_lt": 2, "ns_moq": 1000},
+    "Wi-Fi Mesh Router": {"price": 150.0, "unit_cbm": 0.015, "fe_fob": 38.0, "fe_lt": 10, "fe_moq": 2000, "ns_fob": 45.0, "ns_lt": 2, "ns_moq": 500},
+    "Smart Plug (4-Pack)": {"price": 30.0, "unit_cbm": 0.002, "fe_fob": 6.5, "fe_lt": 10, "fe_moq": 8000, "ns_fob": 8.0, "ns_lt": 2, "ns_moq": 2000}
 }
 
 FE_CONTAINER_CBM, FE_CONTAINER_COST = 68.0, 6500  
@@ -37,18 +37,19 @@ BIG_M = 1000000
 
 # --- 2. FILE UPLOAD & TEMPLATE ENGINE ---
 def generate_upload_template():
+    # FIX: Added all 4 products to the downloadable template
     data = {
-        "Product": ["Smart Thermostat", "HD Security Camera"],
-        "Mean_Demand": [2000, 3500],
-        "Std_Dev": [300, 450],
-        "Sale_Price": [120.0, 85.0],
-        "Unit_CBM": [0.005, 0.003],
-        "China_FOB": [32.0, 18.0],
-        "China_LT_Weeks": [10, 10],
-        "China_MOQ": [3000, 4000],
-        "Poland_FOB": [39.0, 26.0],
-        "Poland_LT_Weeks": [2, 2],
-        "Poland_MOQ": [500, 1000]
+        "Product": ["Smart Thermostat", "HD Security Camera", "Wi-Fi Mesh Router", "Smart Plug (4-Pack)"],
+        "Mean_Demand": [2000, 3500, 1200, 5000],
+        "Std_Dev": [300, 450, 200, 600],
+        "Sale_Price": [120.0, 85.0, 150.0, 30.0],
+        "Unit_CBM": [0.005, 0.003, 0.015, 0.002],
+        "China_FOB": [32.0, 18.0, 38.0, 6.5],
+        "China_LT_Weeks": [10, 10, 10, 10],
+        "China_MOQ": [3000, 4000, 2000, 8000],
+        "Poland_FOB": [37.0, 24.0, 50.0, 8.0],
+        "Poland_LT_Weeks": [2, 2, 2, 2],
+        "Poland_MOQ": [500, 1000, 500, 2000]
     }
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
@@ -99,7 +100,7 @@ with st.sidebar:
             df = pd.read_excel(uploaded_file)
             st.session_state.custom_products, st.session_state.custom_demand, st.session_state.custom_eco = process_uploaded_file(df)
             st.session_state.last_uploaded_file = uploaded_file.name
-            st.session_state.demand_locked = False # Force regen on new data
+            st.session_state.demand_locked = False 
             
         ACTIVE_PRODUCTS = st.session_state.custom_products
         ACTIVE_DEMAND_PARAMS = st.session_state.custom_demand
@@ -240,7 +241,7 @@ def run_milp_optimizer(strategy_type):
     prob += (revenue + salvage_value) - (purchases_fe + purchases_ns + freight + holding + penalties + ve_cost)
     
     try:
-        prob.solve(pulp.PULP_CBC_CMD(msg=0, timeLimit=20, gapRel=0.03))
+        prob.solve(pulp.PULP_CBC_CMD(msg=0, timeLimit=30, gapRel=0.05))
     except:
         prob.solve()
     
@@ -344,7 +345,7 @@ if 'results' not in st.session_state:
     st.session_state.lbo_results = None
 
 if submitted:
-    with st.spinner("Analyzing Pre-Deal Baseline (Legacy China)..."):
+    with st.spinner("Analyzing Pre-Deal Baseline (Legacy China)... This may take up to 30s due to MOQ binary logic."):
         res_leg = run_milp_optimizer("Legacy (China Only)")
         stmt_leg = generate_three_statements(res_leg, True)
 

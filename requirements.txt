@@ -5,3 +5,4 @@ pulp
 altair
 xlsxwriter
 openpyxl
+scipy

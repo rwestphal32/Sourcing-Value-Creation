@@ -1,15 +1,14 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import pulp
 import io
 import altair as alt
 import math
 
 st.set_page_config(page_title="Strategy& Value Creation: Sourcing Twin", layout="wide")
 
-st.title("🌍 PE Value Creation: Two-Stage S&OP & LBO Twin")
-st.markdown("**Context:** A post-deal Private Equity environment. The model uses a Two-Stage engine: An MILP optimizer sets the baseline Far-East container schedule based on the *Forecast*, and a Newsvendor Simulation reacts to the *Stochastic Reality* using Nearshore trucks.")
+st.title("🌍 PE Value Creation: Intelligent Base-Surge LBO Twin")
+st.markdown("**Context:** Evaluating a 2-Year PE Hold. This engine uses dynamic Rolling-Horizon MRP and Newsvendor Critical Ratios to simulate intelligent 'Base-Surge' supply chain execution.")
 
 # --- 1. CONFIGURATION ---
 WEEKS = list(range(1, 105)) # 2 Years
@@ -29,211 +28,158 @@ DEFAULT_ECO = {
     "Smart Plug (4-Pack)": {"price": 30.0, "unit_cbm": 0.002, "fe_fob": 8.0, "fe_lt": 10, "ns_fob": 10.0, "ns_lt": 2}
 }
 
-FE_CONTAINER_CBM = 68.0
-FE_CONTAINER_COST = 6500  
-NS_TRUCK_CBM = 80.0
-NS_TRUCK_COST = 2500      
+FE_CONTAINER_CBM, FE_CONTAINER_COST = 68.0, 6500  
+NS_TRUCK_CBM, NS_TRUCK_COST = 80.0, 2500      
 
-# --- 2. FORECAST VS ACTUAL DEMAND GENERATOR ---
-# BUG FIX: Correctly initializing actual_demand in session state
+# --- 2. DYNAMIC DEMAND GENERATOR ---
 if 'demand_locked' not in st.session_state:
     st.session_state.demand_locked = False
     st.session_state.actual_demand = {}
 
-def generate_stochastic_demand(products, params):
+def generate_stochastic_demand(products, params, y2_growth):
     path = {}
     for p in products:
-        mean = params[p]["mean"]
-        std = params[p]["std"]
+        mean, std = params[p]["mean"], params[p]["std"]
         path[p] = {}
         for w in WEEKS:
-            path[p][w] = max(0, int(np.random.normal(mean, std)))
+            # FIX: Actual volatility physically shifts up with the growth curve
+            growth_multiplier = (1 + y2_growth) if w > 52 else 1
+            path[p][w] = max(0, int(np.random.normal(mean * growth_multiplier, std * growth_multiplier)))
     st.session_state.actual_demand = path
     st.session_state.demand_locked = True
 
-# --- 3. EXCEL EXPORT ENGINE ---
-def generate_cfo_ledger(results_dict, lbo_metrics):
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        # LBO Summary Tab
-        lbo_data = []
-        for name, lbo in lbo_metrics.items():
-            lbo_data.append({"Strategy": name, **lbo})
-        pd.DataFrame(lbo_data).to_excel(writer, sheet_name="LBO_Returns", index=False)
-        
-        # Operational Detail Tabs
-        for name, res in results_dict.items():
-            prefix = "Legacy_" if "Legacy" in name else "Dual_"
-            
-            # Logistics Tab
-            log_data = []
-            for w in WEEKS:
-                log_data.append({
-                    "Week": w, 
-                    "China Containers": res["logistics"]["fe"][w], 
-                    "Poland Trucks": res["logistics"]["ns"][w], 
-                    "Total Freight": res["logistics"]["cost"][w]
-                })
-            pd.DataFrame(log_data).to_excel(writer, sheet_name=f"{prefix}Logistics", index=False)
-            
-            # Product Tabs
-            for p in ACTIVE_PRODUCTS:
-                prod_data = []
-                for w in WEEKS:
-                    prod_data.append({
-                        "Week": w, 
-                        "Forecasted Demand": DEMAND_FCST[p][w], 
-                        "Actual Stochastic Demand": DEMAND_ACTUAL[p][w], 
-                        "Sales Fulfilled": res["sales"][p][w], 
-                        "Lost Sales": res["shortage"][p][w], 
-                        "Ending Inv": res["inv"][p][w], 
-                        "Base FE Order": res["order_fe_plan"][p][w], 
-                        "Reactive NS Order": res["order_ns_react"][p][w]
-                    })
-                sheet_name = f"{prefix}{p[:20]}".replace(" ", "")
-                pd.DataFrame(prod_data).to_excel(writer, sheet_name=sheet_name, index=False)
-    return output.getvalue()
-
-# --- 4. SIDEBAR CONTROLS ---
+# --- 3. SIDEBAR CONTROLS ---
 with st.sidebar:
-    ACTIVE_PRODUCTS = DEFAULT_PRODUCTS
-    ACTIVE_DEMAND_PARAMS = DEMAND_PARAMS
-    FINANCIALS = DEFAULT_ECO
-
-    st.header("Step 1: Lock Market Volatility")
+    st.header("Step 1: Market Volatility")
+    y2_growth_ui = st.slider("Year 2 Market Growth (%)", 0.0, 30.0, 10.0) / 100.0
+    
     if st.button("🔒 Lock 104-Week Actuals", use_container_width=True):
-        generate_stochastic_demand(ACTIVE_PRODUCTS, ACTIVE_DEMAND_PARAMS)
+        generate_stochastic_demand(DEFAULT_PRODUCTS, DEMAND_PARAMS, y2_growth_ui)
         st.success("Locked!")
 
     if not st.session_state.demand_locked:
         np.random.seed(42) 
-        generate_stochastic_demand(ACTIVE_PRODUCTS, ACTIVE_DEMAND_PARAMS)
+        generate_stochastic_demand(DEFAULT_PRODUCTS, DEMAND_PARAMS, y2_growth_ui)
     
     st.markdown("---")
     st.header("Step 2: LBO Mechanics")
     with st.form("lbo_panel"):
-        y2_growth = st.slider("Year 2 Forecasted Growth (%)", 0.0, 30.0, 10.0) / 100.0
         entry_multiple = st.slider("Exit Multiple (x EBITDA)", 6.0, 15.0, 9.0)
         debt_ratio = st.slider("Debt Funding Ratio (%)", 0.0, 80.0, 60.0) / 100.0
         interest_rate = st.slider("Debt Interest Rate (%)", 5.0, 15.0, 9.0) / 100.0
         
-        st.subheader("Operational Policy Levers")
-        ss_weeks = st.slider("Strategic Safety Stock (Weeks)", 1.0, 4.0, 2.0)
+        st.subheader("Operational Cost Levers")
         tariff_rate = st.slider("China Import Tariff (%)", 0.0, 20.0, 8.0) / 100.0
         wacc_weekly = (st.slider("WACC (%)", 5.0, 25.0, 12.0) / 100.0) / 52.0
         holding_cost = st.slider("UK 3PL Storage (£/unit/wk)", 0.05, 0.50, 0.15)
         stockout_penalty = st.slider("Lost Sale Penalty (£/unit)", 20, 150, 80)
         corp_tax = 0.25 
-        submitted = st.form_submit_button("🚀 Run Two-Stage S&OP Engine")
+        submitted = st.form_submit_button("🚀 Run Dynamic Base-Surge Engine")
 
-# Separate Forecast vs Actuals (Applied after sidebar to capture y2_growth)
 DEMAND_ACTUAL = st.session_state.actual_demand
-DEMAND_FCST = {}
-for p in ACTIVE_PRODUCTS:
-    DEMAND_FCST[p] = {}
-    for w in WEEKS:
-        growth_multiplier = (1 + y2_growth) if w > 52 else 1
-        DEMAND_FCST[p][w] = int(ACTIVE_DEMAND_PARAMS[p]["mean"] * growth_multiplier)
 
-# --- 5. STAGE 1: MILP MASTER PLANNER (Forecast Only) ---
-def build_base_plan():
-    """Generates the rigid China container schedule based strictly on the smooth forecast."""
-    prob = pulp.LpProblem("Base_MPS", pulp.LpMinimize)
-    order_fe = pulp.LpVariable.dicts("Order_FE", (ACTIVE_PRODUCTS, WEEKS), lowBound=0, cat='Integer')
-    containers_fe = pulp.LpVariable.dicts("Containers_FE", WEEKS, lowBound=0, cat='Integer')
-    inv = pulp.LpVariable.dicts("Inv", (ACTIVE_PRODUCTS, [0] + WEEKS), lowBound=0, cat='Integer')
+def get_z_score(cr):
+    """Tukey Lambda approximation for Normal Distribution Z-Score"""
+    if cr >= 0.99: return 2.33
+    if cr <= 0.01: return -2.33
+    return 4.91 * (cr**0.14 - (1.0 - cr)**0.14)
 
-    for p in ACTIVE_PRODUCTS:
-        # Starting inventory
-        prob += inv[p][0] == int(DEMAND_FCST[p][1] * (FINANCIALS[p]["fe_lt"] + ss_weeks))
-        
-        for w in WEEKS:
-            arr_fe = order_fe[p][w - FINANCIALS[p]["fe_lt"]] if w > FINANCIALS[p]["fe_lt"] else DEMAND_FCST[p][w]
-            prob += inv[p][w] == inv[p][w-1] + arr_fe - DEMAND_FCST[p][w]
-            prob += inv[p][w] >= int(DEMAND_FCST[p][w] * ss_weeks) # Baseline safety stock
-            if w > 104 - FINANCIALS[p]["fe_lt"]: prob += order_fe[p][w] == 0
-
-    for w in WEEKS:
-        prob += pulp.lpSum([order_fe[p][w] * FINANCIALS[p]["unit_cbm"] for p in ACTIVE_PRODUCTS]) <= containers_fe[w] * FE_CONTAINER_CBM
-
-    holding = pulp.lpSum([inv[p][w] * holding_cost for p in ACTIVE_PRODUCTS for w in WEEKS])
-    freight = pulp.lpSum([containers_fe[w] * FE_CONTAINER_COST for w in WEEKS])
-    prob += holding + freight
-    prob.solve(pulp.PULP_CBC_CMD(msg=0, timeLimit=10))
+# --- 4. THE INTELLIGENT ROLLING S&OP ENGINE ---
+def simulate_intelligent_sop(strategy_type):
+    inv = {p: {} for p in DEFAULT_PRODUCTS}
+    sales = {p: {} for p in DEFAULT_PRODUCTS}
+    shortage = {p: {} for p in DEFAULT_PRODUCTS}
+    order_fe = {p: {} for p in DEFAULT_PRODUCTS}
+    order_ns = {p: {} for p in DEFAULT_PRODUCTS}
     
-    return {p: {w: int(order_fe[p][w].varValue if order_fe[p][w].varValue else 0) for w in WEEKS} for p in ACTIVE_PRODUCTS}
-
-# --- 6. STAGE 2: EXECUTION SIMULATION (Stochastic Actuals & Newsvendor Logic) ---
-def execute_sop_simulation(strategy_type, base_fe_plan):
-    """Simulates the actual reality week-by-week, reacting to stochastic demand spikes."""
-    sim_inv = {p: {0: int(DEMAND_FCST[p][1] * (FINANCIALS[p]["fe_lt"] + ss_weeks))} for p in ACTIVE_PRODUCTS}
-    sim_sales = {p: {} for p in ACTIVE_PRODUCTS}
-    sim_shortage = {p: {} for p in ACTIVE_PRODUCTS}
-    sim_ns_react = {p: {w: 0 for w in WEEKS} for p in ACTIVE_PRODUCTS}
-    
-    for w in WEEKS:
-        for p in ACTIVE_PRODUCTS:
-            arr_fe = base_fe_plan[p][w - FINANCIALS[p]["fe_lt"]] if w > FINANCIALS[p]["fe_lt"] else DEMAND_FCST[p][w]
-            arr_ns = sim_ns_react[p][w - FINANCIALS[p]["ns_lt"]] if w > FINANCIALS[p]["ns_lt"] else 0
-            
-            curr_inv = sim_inv[p][w-1] + arr_fe + arr_ns
-            actual_demand = DEMAND_ACTUAL[p][w]
-            
-            sold = min(curr_inv, actual_demand)
-            sim_sales[p][w] = sold
-            sim_shortage[p][w] = actual_demand - sold
-            sim_inv[p][w] = curr_inv - sold
-            
-            # NEWSVENDOR AGILE CHASE LOGIC (Dual-Sourcing Only)
-            if "Dual" in strategy_type and w <= 104 - FINANCIALS[p]["ns_lt"]:
-                # Look ahead to see what is arriving during the Nearshore lead time
-                pipe_fe = sum([base_fe_plan[p][kw - FINANCIALS[p]["fe_lt"]] for kw in range(w+1, w+3) if kw > FINANCIALS[p]["fe_lt"]])
-                pipe_ns = sum([sim_ns_react[p][kw - FINANCIALS[p]["ns_lt"]] for kw in range(w+1, w+3) if kw > FINANCIALS[p]["ns_lt"]])
-                
-                exp_inv = sim_inv[p][w] + pipe_fe + pipe_ns - (DEMAND_FCST[p][w+1] + DEMAND_FCST[p][w+2])
-                
-                # Dynamic Safety Stock using Z-Score (1.645 = 95% Service Level)
-                volatility_ss = 1.645 * ACTIVE_DEMAND_PARAMS[p]["std"] * math.sqrt(FINANCIALS[p]["ns_lt"])
-                policy_ss = DEMAND_FCST[p][w] * ss_weeks
-                target_ip = int(volatility_ss + policy_ss)
-                
-                if exp_inv < target_ip:
-                    sim_ns_react[p][w] = target_ip - int(exp_inv)
-
-    # Calculate Financials & Container Yields post-simulation
     containers_fe, trucks_ns, cost_freight = {}, {}, {}
+
+    for p in DEFAULT_PRODUCTS:
+        # Initial inventory covers 12 weeks
+        inv[p][0] = int(DEMAND_PARAMS[p]["mean"] * (DEFAULT_ECO[p]["fe_lt"] + 2))
+        for w in range(-15, 1): order_fe[p][w] = 0; order_ns[p][w] = 0
+    
     for w in WEEKS:
-        cbm_fe = sum([base_fe_plan[p][w] * FINANCIALS[p]["unit_cbm"] for p in ACTIVE_PRODUCTS])
-        containers_fe[w] = int(np.ceil(cbm_fe / FE_CONTAINER_CBM))
+        weekly_fe_cbm, weekly_ns_cbm = 0, 0
         
-        cbm_ns = sum([sim_ns_react[p][w] * FINANCIALS[p]["unit_cbm"] for p in ACTIVE_PRODUCTS])
-        trucks_ns[w] = int(np.ceil(cbm_ns / NS_TRUCK_CBM))
-        
+        for p in DEFAULT_PRODUCTS:
+            mean_dem = DEMAND_PARAMS[p]["mean"] * ((1 + y2_growth_ui) if w > 52 else 1)
+            std_dem = DEMAND_PARAMS[p]["std"] * ((1 + y2_growth_ui) if w > 52 else 1)
+            
+            # 1. Receive Arrivals
+            arr_fe = order_fe[p].get(w - DEFAULT_ECO[p]["fe_lt"], 0)
+            arr_ns = order_ns[p].get(w - DEFAULT_ECO[p]["ns_lt"], 0)
+            
+            curr_inv = inv[p][w-1] + arr_fe + arr_ns
+            
+            # 2. Sell
+            act_dem = DEMAND_ACTUAL[p][w]
+            sold = min(curr_inv, act_dem)
+            sales[p][w] = sold
+            shortage[p][w] = act_dem - sold
+            inv[p][w] = curr_inv - sold
+            
+            # 3. Intelligent Planner (Lookahead)
+            pipeline_fe = sum([order_fe[p].get(kw, 0) for kw in range(w - DEFAULT_ECO[p]["fe_lt"] + 1, w)])
+            pipeline_ns = sum([order_ns[p].get(kw, 0) for kw in range(w - DEFAULT_ECO[p]["ns_lt"] + 1, w)])
+            
+            if strategy_type == "Legacy":
+                # Newsvendor: High penalty for stockout (Lost Sale)
+                cu = DEFAULT_ECO[p]["price"] - (DEFAULT_ECO[p]["fe_fob"] * (1+tariff_rate))
+                co = holding_cost * 26 + wacc_weekly * 26 * DEFAULT_ECO[p]["fe_fob"]
+                z = get_z_score(cu / (cu + co)) # e.g. 98th percentile (Z=2.0)
+                
+                target_inv = mean_dem * (DEFAULT_ECO[p]["fe_lt"] + 1) + z * std_dem * math.sqrt(DEFAULT_ECO[p]["fe_lt"])
+                proj_inv = inv[p][w] + pipeline_fe
+                
+                order_fe[p][w] = max(0, int(target_inv - proj_inv)) if w <= 104 - DEFAULT_ECO[p]["fe_lt"] else 0
+                order_ns[p][w] = 0
+                
+            elif strategy_type == "Dual":
+                # BASE (China): Penalty is just the extra cost to buy from Poland
+                cu_base = DEFAULT_ECO[p]["ns_fob"] - (DEFAULT_ECO[p]["fe_fob"] * (1+tariff_rate))
+                co = holding_cost * 26 + wacc_weekly * 26 * DEFAULT_ECO[p]["fe_fob"]
+                z_base = get_z_score(cu_base / (cu_base + co)) # e.g. 50th percentile (Z=0.0) -> No bloated buffer!
+                
+                target_fe = mean_dem * (DEFAULT_ECO[p]["fe_lt"] + 1) + z_base * std_dem * math.sqrt(DEFAULT_ECO[p]["fe_lt"])
+                proj_inv_fe = inv[p][w] + pipeline_fe + pipeline_ns
+                
+                order_fe[p][w] = max(0, int(target_fe - proj_inv_fe)) if w <= 104 - DEFAULT_ECO[p]["fe_lt"] else 0
+                
+                # SURGE (Poland): Chasing the actual volatility
+                cu_surge = DEFAULT_ECO[p]["price"] - DEFAULT_ECO[p]["ns_fob"]
+                z_surge = get_z_score(cu_surge / (cu_surge + co)) # e.g. 98th percentile
+                
+                target_ns = mean_dem * (DEFAULT_ECO[p]["ns_lt"] + 1) + z_surge * std_dem * math.sqrt(DEFAULT_ECO[p]["ns_lt"])
+                proj_inv_ns = inv[p][w] + sum([order_fe[p].get(kw, 0) for kw in range(w - DEFAULT_ECO[p]["fe_lt"] + 1, w + DEFAULT_ECO[p]["ns_lt"])]) + pipeline_ns
+                
+                order_ns[p][w] = max(0, int(target_ns - proj_inv_ns)) if w <= 104 - DEFAULT_ECO[p]["ns_lt"] else 0
+
+            weekly_fe_cbm += order_fe[p][w] * DEFAULT_ECO[p]["unit_cbm"]
+            weekly_ns_cbm += order_ns[p][w] * DEFAULT_ECO[p]["unit_cbm"]
+            
+        containers_fe[w] = int(np.ceil(weekly_fe_cbm / FE_CONTAINER_CBM))
+        trucks_ns[w] = int(np.ceil(weekly_ns_cbm / NS_TRUCK_CBM))
         cost_freight[w] = (containers_fe[w] * FE_CONTAINER_COST) + (trucks_ns[w] * NS_TRUCK_COST)
 
-    return {
-        "sales": sim_sales, "shortage": sim_shortage, "inv": sim_inv, 
-        "order_fe_plan": base_fe_plan, "order_ns_react": sim_ns_react,
-        "logistics": {"fe": containers_fe, "ns": trucks_ns, "cost": cost_freight}
-    }
+    return {"sales": sales, "shortage": shortage, "inv": inv, "order_fe": order_fe, "order_ns": order_ns, "containers_fe": containers_fe, "trucks_ns": trucks_ns, "cost_freight": cost_freight}
 
-# --- 7. LBO FINANCIAL ENGINE ---
+# --- 5. LBO FINANCIAL ENGINE ---
 def calc_lbo(res, is_baseline, entry_ebitda=None):
-    """Translates the supply chain execution into a Private Equity Returns Bridge"""
     def get_ebitda(s_w, e_w):
-        rev = sum([res["sales"][p][w] * FINANCIALS[p]["price"] for p in ACTIVE_PRODUCTS for w in range(s_w, e_w)])
-        cogs_fe = sum([res["order_fe_plan"][p][w] * (FINANCIALS[p]["fe_fob"] * (1+tariff_rate)) for p in ACTIVE_PRODUCTS for w in range(s_w, e_w)])
-        cogs_ns = sum([res["order_ns_react"][p][w] * FINANCIALS[p]["ns_fob"] for p in ACTIVE_PRODUCTS for w in range(s_w, e_w)])
-        freight = sum([res["logistics"]["cost"][w] for w in range(s_w, e_w)])
-        holding = sum([res["inv"][p][w] * holding_cost for p in ACTIVE_PRODUCTS for w in range(s_w, e_w)])
-        short = sum([res["shortage"][p][w] * stockout_penalty for p in ACTIVE_PRODUCTS for w in range(s_w, e_w)])
+        rev = sum([res["sales"][p][w] * DEFAULT_ECO[p]["price"] for p in DEFAULT_PRODUCTS for w in range(s_w, e_w)])
+        cogs_fe = sum([res["order_fe"][p][w] * (DEFAULT_ECO[p]["fe_fob"] * (1+tariff_rate)) for p in DEFAULT_PRODUCTS for w in range(s_w, e_w)])
+        cogs_ns = sum([res["order_ns"][p][w] * DEFAULT_ECO[p]["ns_fob"] for p in DEFAULT_PRODUCTS for w in range(s_w, e_w)])
+        freight = sum([res["cost_freight"][w] for w in range(s_w, e_w)])
+        holding = sum([res["inv"][p][w] * holding_cost for p in DEFAULT_PRODUCTS for w in range(s_w, e_w)])
+        short = sum([res["shortage"][p][w] * stockout_penalty for p in DEFAULT_PRODUCTS for w in range(s_w, e_w)])
         return rev - (cogs_fe + cogs_ns + freight + holding + short)
 
     y1_ebitda, y2_ebitda = get_ebitda(1, 53), get_ebitda(53, 105)
     
-    start_nwc = sum([res["inv"][p][0] * FINANCIALS[p]["fe_fob"] for p in ACTIVE_PRODUCTS])
-    y1_nwc = sum([res["inv"][p][52] * FINANCIALS[p]["fe_fob"] for p in ACTIVE_PRODUCTS])
-    y2_nwc = sum([res["inv"][p][104] * FINANCIALS[p]["fe_fob"] for p in ACTIVE_PRODUCTS])
+    start_nwc = sum([res["inv"][p][0] * DEFAULT_ECO[p]["fe_fob"] for p in DEFAULT_PRODUCTS])
+    y1_nwc = sum([res["inv"][p][52] * DEFAULT_ECO[p]["fe_fob"] for p in DEFAULT_PRODUCTS])
+    y2_nwc = sum([res["inv"][p][104] * DEFAULT_ECO[p]["fe_fob"] for p in DEFAULT_PRODUCTS])
     
     entry_ev = (y1_ebitda if is_baseline else entry_ebitda) * entry_multiple
     starting_debt = entry_ev * debt_ratio
@@ -246,34 +192,25 @@ def calc_lbo(res, is_baseline, entry_ebitda=None):
     ending_debt = end_y1_debt - y2_fcf
     
     exit_ev = y2_ebitda * entry_multiple
-    salvage = sum([res["inv"][p][104] * FINANCIALS[p]["fe_fob"] * 0.9 for p in ACTIVE_PRODUCTS])
+    salvage = sum([res["inv"][p][104] * DEFAULT_ECO[p]["fe_fob"] * 0.9 for p in DEFAULT_PRODUCTS])
     exit_equity = (exit_ev + salvage) - ending_debt
     
-    return {
-        "entry_ev": entry_ev, "starting_debt": starting_debt, "entry_equity": entry_equity, 
-        "y1_ebitda": y1_ebitda, "y1_delta_nwc": y1_nwc-start_nwc, "y1_fcf": y1_fcf, 
-        "y2_ebitda": y2_ebitda, "y2_delta_nwc": y2_nwc-y1_nwc, "y2_fcf": y2_fcf, 
-        "exit_ev": exit_ev, "ending_debt": ending_debt, "exit_equity": exit_equity, 
-        "moic": exit_equity / entry_equity if entry_equity > 0 else 0
-    }
+    return {"entry_ev": entry_ev, "starting_debt": starting_debt, "entry_equity": entry_equity, "y1_ebitda": y1_ebitda, "y1_delta_nwc": y1_nwc-start_nwc, "y1_fcf": y1_fcf, "y2_ebitda": y2_ebitda, "y2_delta_nwc": y2_nwc-y1_nwc, "y2_fcf": y2_fcf, "exit_ev": exit_ev, "ending_debt": ending_debt, "exit_equity": exit_equity, "moic": exit_equity / entry_equity if entry_equity > 0 else 0}
 
-# --- 8. EXECUTION ---
-with st.spinner("Generating MILP Master Production Schedule (Forecast Plan)..."):
-    master_fe_plan = build_base_plan()
-
-with st.spinner("Simulating Stochastic Reality: Legacy China Strategy..."):
-    res_leg = execute_sop_simulation("Legacy", master_fe_plan)
+# --- 6. EXECUTION ---
+with st.spinner("Simulating Legacy China Strategy (Rolling S&OP)..."):
+    res_leg = simulate_intelligent_sop("Legacy")
     lbo_leg = calc_lbo(res_leg, True)
 
-with st.spinner("Simulating Stochastic Reality: Dual-Sourcing Z-Score Chase..."):
-    res_dual = execute_sop_simulation("Dual", master_fe_plan)
+with st.spinner("Simulating Intelligent Base-Surge (Newsvendor)..."):
+    res_dual = simulate_intelligent_sop("Dual")
     lbo_dual = calc_lbo(res_dual, False, lbo_leg["y1_ebitda"])
 
-results = {"Legacy (China Only)": res_leg, "Dual-Sourcing S&OP": res_dual}
-lbo_results = {"Legacy (China Only)": lbo_leg, "Dual-Sourcing S&OP": lbo_dual}
+results = {"Legacy (China Only)": res_leg, "Intelligent Base-Surge": res_dual}
+lbo_results = {"Legacy (China Only)": lbo_leg, "Intelligent Base-Surge": lbo_dual}
 
-# --- 9. DASHBOARDS ---
-tab1, tab2, tab3, tab4 = st.tabs(["🚀 LBO Return Multiples", "💸 FCF Waterfall", "📦 Real-World S&OP Sawtooth", "📥 CFO Audit Ledger"])
+# --- 7. DASHBOARDS ---
+tab1, tab2, tab3 = st.tabs(["🚀 LBO Return Multiples", "💸 FCF Waterfall", "📦 Base-Surge Dynamics"])
 
 with tab1:
     st.subheader("The Deal Scorecard: Multiple on Invested Capital (MOIC)")
@@ -291,26 +228,19 @@ with tab2:
     st.table(pd.DataFrame(waterfall_data).set_index("Strategy").T)
 
 with tab3:
-    st.subheader("Operations: Two-Stage S&OP Volatility Execution")
-    view_prod = st.selectbox("Select Product to Graph:", ACTIVE_PRODUCTS)
+    st.subheader("Operations: Intelligent Base-Surge Reaction")
+    view_prod = st.selectbox("Select Product to Graph:", DEFAULT_PRODUCTS)
     
     chart_data = [{"Week": w, "Metric": "Actual Customer Demand", "Units": int(DEMAND_ACTUAL[view_prod][w])} for w in WEEKS]
     for name, res in results.items():
         chart_data.extend([{"Week": w, "Metric": f"Inv ({name})", "Units": int(res["inv"][view_prod][w])} for w in WEEKS])
             
     c_df = pd.DataFrame(chart_data)
-    domain = ["Actual Customer Demand", "Inv (Legacy (China Only))", "Inv (Dual-Sourcing S&OP)"]
+    domain = ["Actual Customer Demand", "Inv (Legacy (China Only))", "Inv (Intelligent Base-Surge)"]
     range_ = ['#FF4B4B', '#1f77b4', '#2ca02c']
     
     chart = alt.Chart(c_df).mark_line(strokeWidth=3).encode(
         x='Week:Q', y='Units:Q', color=alt.Color('Metric:N', scale=alt.Scale(domain=domain, range=range_)),
         strokeDash=alt.condition(alt.datum.Metric == 'Actual Customer Demand', alt.value([5, 5]), alt.value([0]))
     ).properties(height=450)
-    
-    # Red safety stock floor line based on the forecast and user policy
-    ss_line = alt.Chart(pd.DataFrame({'y': [int(DEMAND_FCST[view_prod][1] * ss_weeks)]})).mark_rule(color='red', strokeDash=[2,2]).encode(y='y:Q')
-    st.altair_chart(chart + ss_line, use_container_width=True)
-
-with tab4:
-    st.subheader("Download Complete CFO Audit Ledger")
-    st.download_button("📥 Download CFO Audit Ledger (.xlsx)", data=generate_cfo_ledger(results, lbo_results), file_name="LBO_Audit_Ledger.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
+    st.altair_chart(chart, use_container_width=True)

@@ -185,7 +185,9 @@ def solve_sourcing(strategy_type):
     wacc_on_hand = pulp.lpSum([inv[p][w] * FINANCIALS[p]["fe_fob"] * wacc_weekly for p in ACTIVE_PRODUCTS for w in WEEKS])
     
     prob += revenue - (cogs + freight + holding + lost_sales_cost + wacc_transit_fe + wacc_transit_ns + wacc_on_hand)
-    prob.solve(pulp.PULP_CBC_CMD(msg=0))
+    
+    # THE SPEED FIX: timeLimit enforces a hard stop, gapRel accepts solutions within 2% of optimal
+    prob.solve(pulp.PULP_CBC_CMD(msg=0, timeLimit=15, gapRel=0.02))
     
     return {
         "status": pulp.LpStatus[prob.status],
@@ -223,13 +225,13 @@ def extract_metrics(sales, order_fe, order_ns, inv, shortage):
 
 # --- 7. EXECUTION ---
 if "Compare Both" in active_scenario:
-    with st.spinner("Simulating Legacy 100% Far-East Strategy..."):
+    with st.spinner("Simulating Legacy 100% Far-East Strategy... (Max 15s)"):
         res_A = solve_sourcing("Legacy Strategy")
-    with st.spinner("Simulating Value Creation Dual-Sourcing..."):
+    with st.spinner("Simulating Value Creation Dual-Sourcing... (Max 15s)"):
         res_B = solve_sourcing("Dual-Sourcing Mix")
     results = {"Legacy (Far-East)": res_A, "Value Creation (Dual)": res_B}
 else:
-    with st.spinner(f"Simulating {active_scenario}..."):
+    with st.spinner(f"Simulating {active_scenario}... (Max 15s)"):
         results = {active_scenario: solve_sourcing(active_scenario)}
 
 # --- 8. VISUAL DASHBOARDS ---
@@ -243,6 +245,8 @@ with tab1:
         m = res["metrics"]
         with cols[i]:
             st.markdown(f"### {name}")
+            if res["status"] != "Optimal":
+                st.caption("*(Solution bounded by 15s time limit)*")
             st.metric("Annual EBITDA (£)", f"£{m['ebitda']:,.0f}")
             st.metric("Working Capital Tied Up", f"£{m['wc']:,.0f}")
             st.metric("Annualized ROIC", f"{m['roic']:.1f}%")
@@ -307,7 +311,7 @@ with tab4:
         ns_val = int(get_val(res["order_ns"][prod_target][w]))
         po_data.append({
             "Week": w,
-            "UK Demand": DEMAND[prod_target][w],
+            "UK Demand": int(DEMAND[prod_target][w]),
             "PO -> Far-East (10 Wks)": fe_val if fe_val > 0 else "-",
             "PO -> Nearshore (2 Wks)": ns_val if ns_val > 0 else "-",
             "Ending UK Inv": int(get_val(res["inv"][prod_target][w])),

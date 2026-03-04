@@ -10,7 +10,7 @@ from scipy.stats import norm
 st.set_page_config(page_title="Strategy& Value Creation: 3-Statement LBO Twin", layout="wide")
 
 st.title("🌍 PE Value Creation: The 100-Day Plan & 3-Statement Twin")
-st.markdown("**Context:** Evaluating a 2-Year PE Hold. Simulating Network Optimization, Value Engineering (9-month development lag), and Terms Optimization, resulting in a full GAAP 3-Statement CFO rollout.")
+st.markdown("**Context:** Evaluating a 2-Year PE Hold. Simulating Network Optimization, Value Engineering, and Terms Optimization to generate a GAAP-compliant 3-Statement CFO rollout.")
 
 # --- 1. DEMO DATA ---
 WEEKS = list(range(1, 105)) 
@@ -54,10 +54,13 @@ def generate_stochastic_demand(products, params, y2_growth, seasonality):
 def generate_cfo_ledger(results_dict, lbo_metrics):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        pd.DataFrame([{"Strategy": n, **lbo} for n, lbo in lbo_metrics.items()]).to_excel(writer, sheet_name="LBO_Returns", index=False)
+        pd.DataFrame([{"Strategy": n, **lbo["CF"]} for n, lbo in lbo_metrics.items()]).to_excel(writer, sheet_name="LBO_Returns", index=False)
         for name, res in results_dict.items():
             prefix = "Legacy_" if "Legacy" in name else "Opt_"
             pd.DataFrame([{"Week": w, "China Containers": res["containers_fe"][w], "Poland Trucks": res["trucks_ns"][w], "Total Freight": res["cost_freight"][w]} for w in WEEKS]).to_excel(writer, sheet_name=f"{prefix}Logistics", index=False)
+            for p in ACTIVE_PRODUCTS:
+                prod_data = [{"Week": w, "Demand": DEMAND_ACTUAL[p][w], "Sales": res["sales"][p][w], "Lost Sales": res["shortage"][p][w], "Ending Inv": res["inv"][p][w], "China PO": res["order_fe"][p][w], "Poland PO": res["order_ns"][p][w]} for w in WEEKS]
+                pd.DataFrame(prod_data).to_excel(writer, sheet_name=f"{prefix}{p[:20]}".replace(" ", ""), index=False)
     return output.getvalue()
 
 # --- 4. SIDEBAR CONTROLS ---
@@ -90,8 +93,12 @@ with st.sidebar:
         entry_multiple = st.slider("Exit Multiple (x EBITDA)", 6.0, 15.0, 10.0)
         debt_ratio = st.slider("Debt Funding Ratio (%)", 0.0, 80.0, 65.0) / 100.0
         interest_rate = st.slider("Debt Interest Rate (%)", 5.0, 15.0, 9.0) / 100.0
-        st.subheader("Operational Constraints")
+        
+        st.subheader("P&L Constraints")
+        sga_margin = st.slider("SG&A Overhead (% of Rev)", 10.0, 40.0, 22.0) / 100.0
         tariff_rate = st.slider("China Import Tariff (%)", 0.0, 20.0, 8.0) / 100.0
+        
+        st.subheader("Operational Constraints")
         wacc_weekly = (st.slider("Cost of Capital (WACC %)", 5.0, 25.0, 15.0) / 100.0) / 52.0
         holding_cost = st.slider("UK 3PL Storage (£/unit/wk)", 0.05, 0.50, 0.35)
         stockout_penalty = st.slider("Lost Sale Penalty (£/unit)", 20, 150, 80)
@@ -119,14 +126,16 @@ def run_milp_optimizer(strategy_type):
         return FINANCIALS[p][f"{node}_fob"] * (1 - ve_savings)
 
     for p in ACTIVE_PRODUCTS:
-        # Calculate Legacy Safety Stock to set the bloated Day 1 baseline
         cu = stockout_penalty
         co_fe_start = (holding_cost + wacc_weekly * FINANCIALS[p]["fe_fob"]) * FINANCIALS[p]["fe_lt"]
         z_fe_start = norm.ppf(cu / (cu + co_fe_start))
-        ss_legacy = int(z_fe_start * ACTIVE_DEMAND_PARAMS[p]["std"] * math.sqrt(FINANCIALS[p]["fe_lt"]))
         
-        # FIX: The Burn-Down starting inventory (10 weeks of mean demand + bloated safety stock)
-        prob += inv[p][0] == int(ACTIVE_DEMAND_PARAMS[p]["mean"] * 10) + ss_legacy
+        start_season_idx = 1 + seasonality_ui * math.sin(2 * math.pi * (1 - 32) / 52)
+        start_std = ACTIVE_DEMAND_PARAMS[p]["std"] * start_season_idx
+        ss_legacy = int(z_fe_start * start_std * math.sqrt(FINANCIALS[p]["fe_lt"]))
+        
+        # FIX: Realistic Day 1 Inventory (2 weeks cycle stock + Safety Stock)
+        prob += inv[p][0] == int(ACTIVE_DEMAND_PARAMS[p]["mean"] * start_season_idx * 2) + ss_legacy
 
         for w in WEEKS:
             season_idx = 1 + seasonality_ui * math.sin(2 * math.pi * (w - 32) / 52)
@@ -142,8 +151,9 @@ def run_milp_optimizer(strategy_type):
 
             prob += inv[p][w] >= ss_floor
             
-            # FIX: Force historical pipeline to 0 to trigger the burn-down effect in the graph
-            arr_fe = order_fe[p][w - FINANCIALS[p]["fe_lt"]] if w > FINANCIALS[p]["fe_lt"] else 0
+            # FIX: Maintain the historical inbound pipeline to prevent the Day-1 shock
+            hist_season = 1 + seasonality_ui * math.sin(2 * math.pi * ((w - FINANCIALS[p]["fe_lt"]) - 32) / 52)
+            arr_fe = order_fe[p][w - FINANCIALS[p]["fe_lt"]] if w > FINANCIALS[p]["fe_lt"] else int(ACTIVE_DEMAND_PARAMS[p]["mean"] * hist_season)
             arr_ns = order_ns[p][w - FINANCIALS[p]["ns_lt"]] if w > FINANCIALS[p]["ns_lt"] else 0
 
             if is_legacy: prob += order_ns[p][w] == 0
@@ -160,16 +170,13 @@ def run_milp_optimizer(strategy_type):
         prob += pulp.lpSum([order_fe[p][w] * FINANCIALS[p]["unit_cbm"] for p in ACTIVE_PRODUCTS]) <= containers_fe[w] * FE_CONTAINER_CBM
         prob += pulp.lpSum([order_ns[p][w] * FINANCIALS[p]["unit_cbm"] for p in ACTIVE_PRODUCTS]) <= trucks_ns[w] * NS_TRUCK_CBM
 
+    # MILP optimizes for total enterprise value extraction
     revenue = pulp.lpSum([sales[p][w] * FINANCIALS[p]["price"] for p in ACTIVE_PRODUCTS for w in WEEKS])
-    
-    # MILP Cash-Flow Objective (Purchases, not GAAP COGS)
     purchases_fe = pulp.lpSum([order_fe[p][w] * (get_fob(p, w, 'fe') * (1+tariff_rate)) for p in ACTIVE_PRODUCTS for w in WEEKS])
     purchases_ns = pulp.lpSum([order_ns[p][w] * get_fob(p, w, 'ns') for p in ACTIVE_PRODUCTS for w in WEEKS])
-    
     freight = pulp.lpSum([containers_fe[w] * FE_CONTAINER_COST + trucks_ns[w] * NS_TRUCK_COST for w in WEEKS])
     holding = pulp.lpSum([inv[p][w] * holding_cost for p in ACTIVE_PRODUCTS for w in WEEKS])
     penalties = pulp.lpSum([shortage[p][w] * stockout_penalty for p in ACTIVE_PRODUCTS for w in WEEKS])
-    
     ve_cost = 0 if is_legacy else ve_investment
     salvage_value = pulp.lpSum([inv[p][104] * get_fob(p, 104, 'fe') * 0.90 for p in ACTIVE_PRODUCTS])
     
@@ -180,6 +187,7 @@ def run_milp_optimizer(strategy_type):
     return {
         "sales": {p: {w: int(get_val(sales[p][w])) for w in WEEKS} for p in ACTIVE_PRODUCTS},
         "inv": {p: {w: int(get_val(inv[p][w])) for w in WEEKS} for p in ACTIVE_PRODUCTS},
+        "inv_pre_sale": {p: {w: int(get_val(inv[p][w]) + get_val(sales[p][w])) for w in WEEKS} for p in ACTIVE_PRODUCTS},
         "inv_0": {p: int(get_val(inv[p][0])) for p in ACTIVE_PRODUCTS},
         "order_fe": {p: {w: int(get_val(order_fe[p][w])) for w in WEEKS} for p in ACTIVE_PRODUCTS},
         "order_ns": {p: {w: int(get_val(order_ns[p][w])) for w in WEEKS} for p in ACTIVE_PRODUCTS},
@@ -193,42 +201,38 @@ def generate_three_statements(res, is_baseline, entry_ebitda=None):
         if is_baseline or w <= ve_dev_weeks: return FINANCIALS[p][f"{node}_fob"]
         return FINANCIALS[p][f"{node}_fob"] * (1 - ve_savings)
 
-    def calc_wac_cogs(s_w, e_w, start_inv_val, is_year_1=False):
-        """Calculates perfectly GAAP-compliant Weighted Average Cost of Goods Sold"""
+    def generate_is(s_w, e_w, is_year_1=False):
         rev = sum([res["sales"][p][w] * FINANCIALS[p]["price"] for p in ACTIVE_PRODUCTS for w in range(s_w, e_w)])
-        sales_units = sum([res["sales"][p][w] for p in ACTIVE_PRODUCTS for w in range(s_w, e_w)])
         
-        purchases_val = sum([res["order_fe"][p][w] * (get_fob(p, w, 'fe') * (1+tariff_rate)) + res["order_ns"][p][w] * get_fob(p, w, 'ns') for p in ACTIVE_PRODUCTS for w in range(s_w, e_w)])
-        purchases_units = sum([res["order_fe"][p][w] + res["order_ns"][p][w] for p in ACTIVE_PRODUCTS for w in range(s_w, e_w)])
+        # FIX: GAAP COGS (Units Sold x FOB Cost). Matches Revenue directly.
+        cogs = sum([res["sales"][p][w] * (get_fob(p, w, 'fe') * (1+tariff_rate)) for p in ACTIVE_PRODUCTS for w in range(s_w, e_w)])
         
-        start_inv_units = sum([res["inv_0"][p] if s_w == 1 else res["inv"][p][s_w-1] for p in ACTIVE_PRODUCTS])
-        
-        # WAC Formula
-        cogas_units = start_inv_units + purchases_units
-        cogas_val = start_inv_val + purchases_val
-        avg_unit_cost = cogas_val / cogas_units if cogas_units > 0 else 0
-        
-        cogs = sales_units * avg_unit_cost
-        end_inv_val = cogas_val - cogs
-        
+        sga = rev * sga_margin
         freight = sum([res["cost_freight"][w] for w in range(s_w, e_w)])
         holding = sum([res["inv"][p][w] * holding_cost for p in ACTIVE_PRODUCTS for w in range(s_w, e_w)])
         short = sum([res["shortage"][p][w] * stockout_penalty for p in ACTIVE_PRODUCTS for w in range(s_w, e_w)])
         ve_opex = ve_investment if not is_baseline and is_year_1 else 0
         
-        ebitda = rev - (cogs + freight + holding + short + ve_opex)
-        return rev, cogs, purchases_val, freight + holding + short + ve_opex, ebitda, end_inv_val
+        ebitda = rev - (cogs + sga + freight + holding + short + ve_opex)
+        
+        purchases = sum([res["order_fe"][p][w] * (get_fob(p, w, 'fe') * (1+tariff_rate)) + res["order_ns"][p][w] * get_fob(p, w, 'ns') for p in ACTIVE_PRODUCTS for w in range(s_w, e_w)])
+        
+        return rev, cogs, sga, purchases, freight + holding + short + ve_opex, ebitda
 
-    # Y1 GAAP Rollout
-    start_inv_val_0 = sum([res["inv_0"][p] * (FINANCIALS[p]["fe_fob"] * (1+tariff_rate)) for p in ACTIVE_PRODUCTS])
-    y1_rev, y1_cogs, y1_purchases, y1_opex, y1_ebitda, y1_end_inv_val = calc_wac_cogs(1, 53, start_inv_val_0, True)
-    
-    # Y2 GAAP Rollout (VE heavily drops the Average Unit Cost here)
-    y2_rev, y2_cogs, y2_purchases, y2_opex, y2_ebitda, y2_end_inv_val = calc_wac_cogs(53, 105, y1_end_inv_val, False)
+    y1_rev, y1_cogs, y1_sga, y1_purchases, y1_opex, y1_ebitda = generate_is(1, 53, True)
+    y2_rev, y2_cogs, y2_sga, y2_purchases, y2_opex, y2_ebitda = generate_is(53, 105, False)
 
     dpo = 30 if is_baseline else dpo_days
     dso = 30 if is_baseline else dso_days
     
+    # Balance Sheet Assets
+    cash_base = 5000000
+    ppe_base = 15000000
+    
+    inv_val_0 = sum([res["inv_0"][p] * (FINANCIALS[p]["fe_fob"] * (1+tariff_rate)) for p in ACTIVE_PRODUCTS])
+    inv_val_1 = sum([res["inv"][p][52] * (get_fob(p, 52, 'fe') * (1+tariff_rate)) for p in ACTIVE_PRODUCTS])
+    inv_val_2 = sum([res["inv"][p][104] * (get_fob(p, 104, 'fe') * (1+tariff_rate)) for p in ACTIVE_PRODUCTS])
+
     ar_0 = (y1_rev / 365) * 30 
     ar_1 = (y1_rev / 365) * dso
     ar_2 = (y2_rev / 365) * dso
@@ -237,9 +241,9 @@ def generate_three_statements(res, is_baseline, entry_ebitda=None):
     ap_1 = (y1_purchases / 365) * dpo
     ap_2 = (y2_purchases / 365) * dpo
 
-    nwc_0 = (start_inv_val_0 + ar_0) - ap_0
-    nwc_1 = (y1_end_inv_val + ar_1) - ap_1
-    nwc_2 = (y2_end_inv_val + ar_2) - ap_2
+    nwc_0 = (inv_val_0 + ar_0) - ap_0
+    nwc_1 = (inv_val_1 + ar_1) - ap_1
+    nwc_2 = (inv_val_2 + ar_2) - ap_2
 
     entry_ev = (y1_ebitda if is_baseline else entry_ebitda) * entry_multiple
     starting_debt = entry_ev * debt_ratio
@@ -256,11 +260,14 @@ def generate_three_statements(res, is_baseline, entry_ebitda=None):
     debt_2 = debt_1 - y2_fcf
     
     exit_ev = y2_ebitda * entry_multiple
-    exit_equity = exit_ev - debt_2
+    salvage = inv_val_2 * 0.9
+    exit_equity = (exit_ev + salvage + cash_base) - debt_2
 
     return {
-        "IS": {"Y1 Rev": y1_rev, "Y1 COGS": -y1_cogs, "Y1 OPEX": -y1_opex, "Y1 EBITDA": y1_ebitda, "Y2 Rev": y2_rev, "Y2 COGS": -y2_cogs, "Y2 OPEX": -y2_opex, "Y2 EBITDA": y2_ebitda},
-        "BS": {"Inv 0": start_inv_val_0, "AR 0": ar_0, "AP 0": ap_0, "Debt 0": starting_debt, "Equity 0": entry_equity, "Inv 2": y2_end_inv_val, "AR 2": ar_2, "AP 2": ap_2, "Debt 2": debt_2, "Equity 2": exit_equity},
+        "IS": {"Y1 Rev": y1_rev, "Y1 COGS": -y1_cogs, "Y1 SGA": -y1_sga, "Y1 OPEX": -y1_opex, "Y1 EBITDA": y1_ebitda, 
+               "Y2 Rev": y2_rev, "Y2 COGS": -y2_cogs, "Y2 SGA": -y2_sga, "Y2 OPEX": -y2_opex, "Y2 EBITDA": y2_ebitda},
+        "BS": {"Cash": cash_base, "PPE": ppe_base, "Inv 0": inv_val_0, "AR 0": ar_0, "AP 0": ap_0, "Debt 0": starting_debt, "Equity 0": entry_equity, 
+               "Inv 2": inv_val_2, "AR 2": ar_2, "AP 2": ap_2, "Debt 2": debt_2, "Equity 2": exit_equity},
         "CF": {"Y1 FCF": y1_fcf, "Y2 FCF": y2_fcf, "MOIC": exit_equity / entry_equity if entry_equity > 0 else 0, "Exit EV": exit_ev}
     }
 
@@ -277,29 +284,28 @@ results = {"Legacy (Baseline)": res_leg, "Strategy& 100-Day Plan": res_opt}
 lbo_results = {"Legacy (Baseline)": stmt_leg, "Strategy& 100-Day Plan": stmt_opt}
 
 # --- 8. DASHBOARDS ---
-tab1, tab2, tab3 = st.tabs(["📊 The 3-Statement LBO Model", "📦 Pre-Sale Inventory Sawtooth", "📈 Value Creation Bridge"])
+tab1, tab2, tab3, tab4 = st.tabs(["📊 3-Statement LBO Model", "📦 Available Inventory Sawtooth", "📈 Value Creation Bridge", "📥 Excel Export"])
 
 with tab1:
     st.subheader("CFO View: The GAAP 3-Statement Financial Rollout")
     
     st.markdown("### 1. Income Statement (Hold Period)")
     is_data = {
-        "Line Item": ["Revenue", "COGS (GAAP Matching)", "OPEX (Holding/Freight/VE Invest)", "EBITDA"],
-        "Legacy Y1": [f"£{stmt_leg['IS']['Y1 Rev']:,.0f}", f"£{stmt_leg['IS']['Y1 COGS']:,.0f}", f"£{stmt_leg['IS']['Y1 OPEX']:,.0f}", f"£{stmt_leg['IS']['Y1 EBITDA']:,.0f}"],
-        "Legacy Y2": [f"£{stmt_leg['IS']['Y2 Rev']:,.0f}", f"£{stmt_leg['IS']['Y2 COGS']:,.0f}", f"£{stmt_leg['IS']['Y2 OPEX']:,.0f}", f"£{stmt_leg['IS']['Y2 EBITDA']:,.0f}"],
-        "Opt 100-Day Y1": [f"£{stmt_opt['IS']['Y1 Rev']:,.0f}", f"£{stmt_opt['IS']['Y1 COGS']:,.0f}", f"£{stmt_opt['IS']['Y1 OPEX']:,.0f}", f"£{stmt_opt['IS']['Y1 EBITDA']:,.0f}"],
-        "Opt 100-Day Y2": [f"£{stmt_opt['IS']['Y2 Rev']:,.0f}", f"£{stmt_opt['IS']['Y2 COGS']:,.0f}", f"£{stmt_opt['IS']['Y2 OPEX']:,.0f}", f"£{stmt_opt['IS']['Y2 EBITDA']:,.0f}"]
+        "Line Item": ["Revenue", "COGS (GAAP Matching)", "SG&A Overhead", "OPEX (Holding/Freight/VE Invest)", "EBITDA"],
+        "Legacy Y1": [f"£{stmt_leg['IS']['Y1 Rev']:,.0f}", f"£{stmt_leg['IS']['Y1 COGS']:,.0f}", f"£{stmt_leg['IS']['Y1 SGA']:,.0f}", f"£{stmt_leg['IS']['Y1 OPEX']:,.0f}", f"£{stmt_leg['IS']['Y1 EBITDA']:,.0f}"],
+        "Legacy Y2": [f"£{stmt_leg['IS']['Y2 Rev']:,.0f}", f"£{stmt_leg['IS']['Y2 COGS']:,.0f}", f"£{stmt_leg['IS']['Y2 SGA']:,.0f}", f"£{stmt_leg['IS']['Y2 OPEX']:,.0f}", f"£{stmt_leg['IS']['Y2 EBITDA']:,.0f}"],
+        "Opt 100-Day Y1": [f"£{stmt_opt['IS']['Y1 Rev']:,.0f}", f"£{stmt_opt['IS']['Y1 COGS']:,.0f}", f"£{stmt_opt['IS']['Y1 SGA']:,.0f}", f"£{stmt_opt['IS']['Y1 OPEX']:,.0f}", f"£{stmt_opt['IS']['Y1 EBITDA']:,.0f}"],
+        "Opt 100-Day Y2": [f"£{stmt_opt['IS']['Y2 Rev']:,.0f}", f"£{stmt_opt['IS']['Y2 COGS']:,.0f}", f"£{stmt_opt['IS']['Y2 SGA']:,.0f}", f"£{stmt_opt['IS']['Y2 OPEX']:,.0f}", f"£{stmt_opt['IS']['Y2 EBITDA']:,.0f}"]
     }
     st.table(pd.DataFrame(is_data).set_index("Line Item"))
-    st.caption("**Insight:** Notice how the Value Engineering (VE) savings impact Year 2 heavily compared to Year 1 due to the 9-month development lag, directly expanding Y2 EBITDA.")
 
     col1, col2 = st.columns(2)
     with col1:
-        st.markdown("### 2. Balance Sheet (Entry vs Exit)")
+        st.markdown("### 2. Balance Sheet (Exit View)")
         bs_data = {
-            "Line Item": ["Assets: Inventory", "Assets: Accts Receivable", "Liabilities: Accts Payable", "Liabilities: LBO Debt", "Total Equity"],
-            "Legacy (Exit Y2)": [f"£{stmt_leg['BS']['Inv 2']:,.0f}", f"£{stmt_leg['BS']['AR 2']:,.0f}", f"£{-stmt_leg['BS']['AP 2']:,.0f}", f"£{-stmt_leg['BS']['Debt 2']:,.0f}", f"£{stmt_leg['BS']['Equity 2']:,.0f}"],
-            "Opt 100-Day (Exit Y2)": [f"£{stmt_opt['BS']['Inv 2']:,.0f}", f"£{stmt_opt['BS']['AR 2']:,.0f}", f"£{-stmt_opt['BS']['AP 2']:,.0f}", f"£{-stmt_opt['BS']['Debt 2']:,.0f}", f"£{stmt_opt['BS']['Equity 2']:,.0f}"]
+            "Line Item": ["Assets: Operating Cash", "Assets: PP&E", "Assets: Inventory", "Assets: Accts Receivable", "Liabilities: Accts Payable", "Liabilities: LBO Debt"],
+            "Legacy (Exit Y2)": [f"£{stmt_leg['BS']['Cash']:,.0f}", f"£{stmt_leg['BS']['PPE']:,.0f}", f"£{stmt_leg['BS']['Inv 2']:,.0f}", f"£{stmt_leg['BS']['AR 2']:,.0f}", f"£{-stmt_leg['BS']['AP 2']:,.0f}", f"£{-stmt_leg['BS']['Debt 2']:,.0f}"],
+            "Opt 100-Day (Exit Y2)": [f"£{stmt_opt['BS']['Cash']:,.0f}", f"£{stmt_opt['BS']['PPE']:,.0f}", f"£{stmt_opt['BS']['Inv 2']:,.0f}", f"£{stmt_opt['BS']['AR 2']:,.0f}", f"£{-stmt_opt['BS']['AP 2']:,.0f}", f"£{-stmt_opt['BS']['Debt 2']:,.0f}"]
         }
         st.table(pd.DataFrame(bs_data).set_index("Line Item"))
         
@@ -313,12 +319,12 @@ with tab1:
         st.table(pd.DataFrame(cf_data).set_index("Line Item"))
 
 with tab2:
-    st.subheader("Operations: Base-Surge Burn-Down Sawtooth")
+    st.subheader("Operations: Available Pre-Sale Inventory Sawtooth")
     view_prod = st.selectbox("Select Product to Graph:", ACTIVE_PRODUCTS)
     
     chart_data = [{"Week": w, "Metric": "Actual Seasonal Demand", "Units": int(DEMAND_ACTUAL[view_prod][w])} for w in WEEKS]
     for name, res in results.items():
-        chart_data.extend([{"Week": w, "Metric": f"Available Inv ({name})", "Units": int(res["inv"][view_prod][w] + res["sales"][view_prod][w])} for w in WEEKS])
+        chart_data.extend([{"Week": w, "Metric": f"Available Inv ({name})", "Units": int(res["inv_pre_sale"][view_prod][w])} for w in WEEKS])
             
     c_df = pd.DataFrame(chart_data)
     domain = ["Actual Seasonal Demand", "Available Inv (Legacy (Baseline))", "Available Inv (Strategy& 100-Day Plan)"]
@@ -329,7 +335,6 @@ with tab2:
         strokeDash=alt.condition(alt.datum.Metric == 'Actual Seasonal Demand', alt.value([5, 5]), alt.value([0]))
     ).properties(height=450)
     st.altair_chart(chart, use_container_width=True)
-    st.caption("**Insight:** The graph plots *Available Inventory* against Weekly Demand. Notice the massive 'Burn Down' effect at the beginning. Both strategies start at the exact same bloated Legacy level on Day 1. The green 100-Day Plan instantly drains the warehouse, riding a hyper-lean safety floor, while the blue line continues to carry a massive buffer to survive its 10-week blind spot.")
 
 with tab3:
     st.subheader("The PE Value Creation Bridge")
@@ -339,3 +344,7 @@ with tab3:
         "Opt 100-Day Plan": [f"£{stmt_opt['BS']['Equity 0']:,.0f}", f"£{stmt_opt['CF']['Y1 FCF'] + stmt_opt['CF']['Y2 FCF']:,.0f}", f"£{stmt_opt['BS']['Debt 0'] - stmt_opt['BS']['Debt 2']:,.0f}", f"£{stmt_opt['CF']['Exit EV']:,.0f}", f"-£{stmt_opt['BS']['Debt 2']:,.0f}", f"£{stmt_opt['BS']['Equity 2']:,.0f}"]
     }
     st.table(pd.DataFrame(bridge_data).set_index("Value Driver"))
+
+with tab4:
+    st.subheader("Data Export")
+    st.download_button("📥 Download Complete CFO Ledger (.xlsx)", data=generate_cfo_ledger(results, lbo_results), file_name="PE_100_Day_Audit.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")

@@ -12,7 +12,7 @@ st.set_page_config(page_title="Strategy& Value Creation: 3-Statement LBO Twin", 
 st.title("🌍 PE Value Creation: The 100-Day Plan & 3-Statement Twin")
 st.markdown("**Context:** Evaluating a 2-Year PE Hold. Simulating Network Optimization, Value Engineering, and Terms Optimization to generate a GAAP-compliant 3-Statement CFO rollout.")
 
-# --- 1. DEMO DATA ---
+# --- 1. DEMO DATA (NOW WITH REALISTIC FACTORY MOQs) ---
 WEEKS = list(range(1, 105)) 
 DEFAULT_PRODUCTS = ["Smart Thermostat", "HD Security Camera", "Wi-Fi Mesh Router", "Smart Plug (4-Pack)"]
 
@@ -24,14 +24,15 @@ DEMAND_PARAMS = {
 }
 
 DEFAULT_ECO = {
-    "Smart Thermostat": {"price": 120.0, "unit_cbm": 0.005, "fe_fob": 35.0, "fe_lt": 10, "ns_fob": 37.0, "ns_lt": 2},
-    "HD Security Camera": {"price": 85.0, "unit_cbm": 0.003, "fe_fob": 22.0, "fe_lt": 10, "ns_fob": 24.5, "ns_lt": 2},
-    "Wi-Fi Mesh Router": {"price": 150.0, "unit_cbm": 0.015, "fe_fob": 45.0, "fe_lt": 10, "ns_fob": 48.0, "ns_lt": 2},
-    "Smart Plug (4-Pack)": {"price": 30.0, "unit_cbm": 0.002, "fe_fob": 8.0, "fe_lt": 10, "ns_fob": 9.5, "ns_lt": 2}
+    "Smart Thermostat": {"price": 120.0, "unit_cbm": 0.005, "fe_fob": 35.0, "fe_lt": 10, "fe_moq": 5000, "ns_fob": 37.0, "ns_lt": 2, "ns_moq": 1000},
+    "HD Security Camera": {"price": 85.0, "unit_cbm": 0.003, "fe_fob": 22.0, "fe_lt": 10, "fe_moq": 8000, "ns_fob": 24.5, "ns_lt": 2, "ns_moq": 1500},
+    "Wi-Fi Mesh Router": {"price": 150.0, "unit_cbm": 0.015, "fe_fob": 45.0, "fe_lt": 10, "fe_moq": 3000, "ns_fob": 48.0, "ns_lt": 2, "ns_moq": 500},
+    "Smart Plug (4-Pack)": {"price": 30.0, "unit_cbm": 0.002, "fe_fob": 8.0, "fe_lt": 10, "fe_moq": 15000, "ns_fob": 9.5, "ns_lt": 2, "ns_moq": 2500}
 }
 
 FE_CONTAINER_CBM, FE_CONTAINER_COST = 68.0, 6500  
 NS_TRUCK_CBM, NS_TRUCK_COST = 80.0, 2500      
+BIG_M = 1000000 # For Binary MOQ Logic
 
 # --- 2. DYNAMIC SEASONAL DEMAND GENERATOR ---
 if 'demand_locked' not in st.session_state:
@@ -113,8 +114,15 @@ def run_milp_optimizer(strategy_type):
     
     order_fe = pulp.LpVariable.dicts("Order_FE", (ACTIVE_PRODUCTS, WEEKS), lowBound=0, cat='Integer')
     order_ns = pulp.LpVariable.dicts("Order_NS", (ACTIVE_PRODUCTS, WEEKS), lowBound=0, cat='Integer')
+    
+    # Binary variables to enforce Factory MOQs
+    order_fe_bin = pulp.LpVariable.dicts("FE_Bin", (ACTIVE_PRODUCTS, WEEKS), cat='Binary')
+    order_ns_bin = pulp.LpVariable.dicts("NS_Bin", (ACTIVE_PRODUCTS, WEEKS), cat='Binary')
+    
+    # China is FCL (Integer), Poland is LTL (Continuous)
     containers_fe = pulp.LpVariable.dicts("Containers_FE", WEEKS, lowBound=0, cat='Integer')
-    trucks_ns = pulp.LpVariable.dicts("Trucks_NS", WEEKS, lowBound=0, cat='Integer')
+    trucks_ns = pulp.LpVariable.dicts("Trucks_NS", WEEKS, lowBound=0, cat='Continuous')
+    
     inv = pulp.LpVariable.dicts("Inv", (ACTIVE_PRODUCTS, [0] + WEEKS), lowBound=0, cat='Integer')
     sales = pulp.LpVariable.dicts("Sales", (ACTIVE_PRODUCTS, WEEKS), lowBound=0, cat='Integer')
     shortage = pulp.LpVariable.dicts("Shortage", (ACTIVE_PRODUCTS, WEEKS), lowBound=0, cat='Integer')
@@ -134,10 +142,16 @@ def run_milp_optimizer(strategy_type):
         start_std = ACTIVE_DEMAND_PARAMS[p]["std"] * start_season_idx
         ss_legacy = int(z_fe_start * start_std * math.sqrt(FINANCIALS[p]["fe_lt"]))
         
-        # FIX 1: Start EXACTLY at the natural Legacy hovering point (Safety Stock + 0.5 weeks cycle stock)
-        prob += inv[p][0] == ss_legacy + int(ACTIVE_DEMAND_PARAMS[p]["mean"] * start_season_idx * 0.5)
+        prob += inv[p][0] == int(ACTIVE_DEMAND_PARAMS[p]["mean"] * start_season_idx * 2.5)
 
         for w in WEEKS:
+            # MOQ Big-M Constraints
+            prob += order_fe[p][w] >= FINANCIALS[p]["fe_moq"] * order_fe_bin[p][w]
+            prob += order_fe[p][w] <= BIG_M * order_fe_bin[p][w]
+            
+            prob += order_ns[p][w] >= FINANCIALS[p]["ns_moq"] * order_ns_bin[p][w]
+            prob += order_ns[p][w] <= BIG_M * order_ns_bin[p][w]
+
             season_idx = 1 + seasonality_ui * math.sin(2 * math.pi * (w - 32) / 52)
             growth_multiplier = (1 + y2_growth_ui) if w > 52 else 1
             current_std = ACTIVE_DEMAND_PARAMS[p]["std"] * growth_multiplier * season_idx
@@ -151,20 +165,25 @@ def run_milp_optimizer(strategy_type):
 
             prob += inv[p][w] >= ss_floor
             
-            # FIX 2: Historical pipeline matches THIS week's demand perfectly, preventing the Day-1 spike
-            expected_demand = int(ACTIVE_DEMAND_PARAMS[p]["mean"] * season_idx)
-            arr_fe = order_fe[p][w - FINANCIALS[p]["fe_lt"]] if w > FINANCIALS[p]["fe_lt"] else expected_demand
+            hist_season = 1 + seasonality_ui * math.sin(2 * math.pi * ((w - FINANCIALS[p]["fe_lt"]) - 32) / 52)
+            arr_fe = order_fe[p][w - FINANCIALS[p]["fe_lt"]] if w > FINANCIALS[p]["fe_lt"] else int(ACTIVE_DEMAND_PARAMS[p]["mean"] * hist_season)
             arr_ns = order_ns[p][w - FINANCIALS[p]["ns_lt"]] if w > FINANCIALS[p]["ns_lt"] else 0
 
-            if is_legacy: prob += order_ns[p][w] == 0
+            if is_legacy: 
+                prob += order_ns[p][w] == 0
+                prob += order_ns_bin[p][w] == 0
                 
             prob += inv[p][w] == inv[p][w-1] + arr_fe + arr_ns - sales[p][w]
             prob += sales[p][w] <= DEMAND_ACTUAL[p][w]
             prob += sales[p][w] <= inv[p][w-1] + arr_fe + arr_ns
             prob += shortage[p][w] == DEMAND_ACTUAL[p][w] - sales[p][w]
             
-            if w > 104 - FINANCIALS[p]["fe_lt"]: prob += order_fe[p][w] == 0
-            if w > 104 - FINANCIALS[p]["ns_lt"]: prob += order_ns[p][w] == 0
+            if w > 104 - FINANCIALS[p]["fe_lt"]: 
+                prob += order_fe[p][w] == 0
+                prob += order_fe_bin[p][w] == 0
+            if w > 104 - FINANCIALS[p]["ns_lt"]: 
+                prob += order_ns[p][w] == 0
+                prob += order_ns_bin[p][w] == 0
 
     for w in WEEKS:
         prob += pulp.lpSum([order_fe[p][w] * FINANCIALS[p]["unit_cbm"] for p in ACTIVE_PRODUCTS]) <= containers_fe[w] * FE_CONTAINER_CBM
@@ -182,7 +201,8 @@ def run_milp_optimizer(strategy_type):
     prob += (revenue + salvage_value) - (purchases_fe + purchases_ns + freight + holding + penalties + ve_cost)
     
     try:
-        prob.solve(pulp.PULP_CBC_CMD(msg=0, timeLimit=20, gapRel=0.03))
+        # Give the solver up to 30 seconds due to the heavy binary MOQ logic
+        prob.solve(pulp.PULP_CBC_CMD(msg=0, timeLimit=30, gapRel=0.05))
     except:
         prob.solve()
     
@@ -190,14 +210,13 @@ def run_milp_optimizer(strategy_type):
     return {
         "sales": {p: {w: int(get_val(sales[p][w])) for w in WEEKS} for p in ACTIVE_PRODUCTS},
         "inv": {p: {w: int(get_val(inv[p][w])) for w in WEEKS} for p in ACTIVE_PRODUCTS},
-        "inv_pre_sale": {p: {w: int(get_val(inv[p][w]) + get_val(sales[p][w])) for w in WEEKS} for p in ACTIVE_PRODUCTS},
         "inv_0": {p: int(get_val(inv[p][0])) for p in ACTIVE_PRODUCTS},
         "order_fe": {p: {w: int(get_val(order_fe[p][w])) for w in WEEKS} for p in ACTIVE_PRODUCTS},
         "order_ns": {p: {w: int(get_val(order_ns[p][w])) for w in WEEKS} for p in ACTIVE_PRODUCTS},
-        "cost_freight": {w: (int(get_val(containers_fe[w])) * FE_CONTAINER_COST) + (int(get_val(trucks_ns[w])) * NS_TRUCK_COST) for w in WEEKS},
+        "cost_freight": {w: (get_val(containers_fe[w]) * FE_CONTAINER_COST) + (get_val(trucks_ns[w]) * NS_TRUCK_COST) for w in WEEKS},
         "shortage": {p: {w: int(get_val(shortage[p][w])) for w in WEEKS} for p in ACTIVE_PRODUCTS},
-        "containers_fe": {w: int(get_val(containers_fe[w])) for w in WEEKS},
-        "trucks_ns": {w: int(get_val(trucks_ns[w])) for w in WEEKS}
+        "containers_fe": {w: get_val(containers_fe[w]) for w in WEEKS},
+        "trucks_ns": {w: get_val(trucks_ns[w]) for w in WEEKS}
     }
 
 # --- 6. LBO FINANCIAL ENGINE (GAAP COMPLIANT) ---
@@ -275,7 +294,7 @@ if 'results' not in st.session_state:
     st.session_state.lbo_results = None
 
 if submitted:
-    with st.spinner("Analyzing Pre-Deal Baseline (Legacy China)..."):
+    with st.spinner("Analyzing Pre-Deal Baseline (Legacy China)... This may take up to 30s due to MOQ binary logic."):
         res_leg = run_milp_optimizer("Legacy (China Only)")
         stmt_leg = generate_three_statements(res_leg, True)
 

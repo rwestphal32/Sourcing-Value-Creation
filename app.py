@@ -12,8 +12,9 @@ st.set_page_config(page_title="Strategy& Value Creation: 3-Statement LBO Twin", 
 st.title("🌍 PE Value Creation: The 100-Day Plan & 3-Statement Twin")
 st.markdown("**Context:** Evaluating a 2-Year PE Hold. Simulating Network Optimization, Value Engineering, and Terms Optimization to generate a GAAP-compliant 3-Statement CFO rollout.")
 
-# --- 1. DEMO DATA (NOW WITH REALISTIC FACTORY MOQs) ---
+# --- 1. FALLBACK DEMO DATA (Wider Price Gaps, Realistic MOQs) ---
 WEEKS = list(range(1, 105)) 
+
 DEFAULT_PRODUCTS = ["Smart Thermostat", "HD Security Camera", "Wi-Fi Mesh Router", "Smart Plug (4-Pack)"]
 
 DEMAND_PARAMS = {
@@ -24,64 +25,104 @@ DEMAND_PARAMS = {
 }
 
 DEFAULT_ECO = {
-    "Smart Thermostat": {"price": 120.0, "unit_cbm": 0.005, "fe_fob": 35.0, "fe_lt": 10, "fe_moq": 5000, "ns_fob": 37.0, "ns_lt": 2, "ns_moq": 1000},
-    "HD Security Camera": {"price": 85.0, "unit_cbm": 0.003, "fe_fob": 22.0, "fe_lt": 10, "fe_moq": 8000, "ns_fob": 24.5, "ns_lt": 2, "ns_moq": 1500},
-    "Wi-Fi Mesh Router": {"price": 150.0, "unit_cbm": 0.015, "fe_fob": 45.0, "fe_lt": 10, "fe_moq": 3000, "ns_fob": 48.0, "ns_lt": 2, "ns_moq": 500},
-    "Smart Plug (4-Pack)": {"price": 30.0, "unit_cbm": 0.002, "fe_fob": 8.0, "fe_lt": 10, "fe_moq": 15000, "ns_fob": 9.5, "ns_lt": 2, "ns_moq": 2500}
+    "Smart Thermostat": {"price": 120.0, "unit_cbm": 0.005, "fe_fob": 32.0, "fe_lt": 10, "fe_moq": 3000, "ns_fob": 39.0, "ns_lt": 2, "ns_moq": 500},
+    "HD Security Camera": {"price": 85.0, "unit_cbm": 0.003, "fe_fob": 18.0, "fe_lt": 10, "fe_moq": 4000, "ns_fob": 26.0, "ns_lt": 2, "ns_moq": 1000},
+    "Wi-Fi Mesh Router": {"price": 150.0, "unit_cbm": 0.015, "fe_fob": 38.0, "fe_lt": 10, "fe_moq": 2000, "ns_fob": 52.0, "ns_lt": 2, "ns_moq": 500},
+    "Smart Plug (4-Pack)": {"price": 30.0, "unit_cbm": 0.002, "fe_fob": 6.5, "fe_lt": 10, "fe_moq": 8000, "ns_fob": 10.0, "ns_lt": 2, "ns_moq": 2000}
 }
 
 FE_CONTAINER_CBM, FE_CONTAINER_COST = 68.0, 6500  
 NS_TRUCK_CBM, NS_TRUCK_COST = 80.0, 2500      
-BIG_M = 1000000 # For Binary MOQ Logic
+BIG_M = 1000000
 
-# --- 2. DYNAMIC SEASONAL DEMAND GENERATOR ---
+# --- 2. FILE UPLOAD & TEMPLATE ENGINE ---
+def generate_upload_template():
+    data = {
+        "Product": ["Smart Thermostat", "HD Security Camera"],
+        "Mean_Demand": [2000, 3500],
+        "Std_Dev": [300, 450],
+        "Sale_Price": [120.0, 85.0],
+        "Unit_CBM": [0.005, 0.003],
+        "China_FOB": [32.0, 18.0],
+        "China_LT_Weeks": [10, 10],
+        "China_MOQ": [3000, 4000],
+        "Poland_FOB": [39.0, 26.0],
+        "Poland_LT_Weeks": [2, 2],
+        "Poland_MOQ": [500, 1000]
+    }
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        pd.DataFrame(data).to_excel(writer, sheet_name="SKU_Data", index=False)
+    return output.getvalue()
+
+def process_uploaded_file(df):
+    custom_products = df["Product"].tolist()
+    custom_demand = {}
+    custom_eco = {}
+    
+    for _, row in df.iterrows():
+        p = row["Product"]
+        custom_demand[p] = {"mean": row["Mean_Demand"], "std": row["Std_Dev"]}
+        custom_eco[p] = {
+            "price": row["Sale_Price"], "unit_cbm": row["Unit_CBM"],
+            "fe_fob": row["China_FOB"], "fe_lt": row["China_LT_Weeks"], "fe_moq": row["China_MOQ"],
+            "ns_fob": row["Poland_FOB"], "ns_lt": row["Poland_LT_Weeks"], "ns_moq": row["Poland_MOQ"]
+        }
+    return custom_products, custom_demand, custom_eco
+
+# --- 3. DYNAMIC SEASONAL DEMAND GENERATOR ---
 if 'demand_locked' not in st.session_state:
     st.session_state.demand_locked = False
     st.session_state.actual_demand = {}
+    st.session_state.last_uploaded_file = None
 
 def generate_stochastic_demand(products, params, y2_growth, seasonality):
     path = {}
     for p in products:
-        mean, std = params[p]["mean"], params[p]["std"]
         path[p] = {}
         for w in WEEKS:
             season_idx = 1 + seasonality * math.sin(2 * math.pi * (w - 32) / 52)
             growth_multiplier = (1 + y2_growth) if w > 52 else 1
-            path[p][w] = max(0, int(np.random.normal(mean * growth_multiplier * season_idx, std * growth_multiplier * season_idx)))
+            path[p][w] = max(0, int(np.random.normal(params[p]["mean"] * growth_multiplier * season_idx, params[p]["std"] * growth_multiplier * season_idx)))
     st.session_state.actual_demand = path
     st.session_state.demand_locked = True
 
-# --- 3. EXCEL EXPORT ENGINE ---
-def generate_cfo_ledger(results_dict, lbo_metrics):
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        pd.DataFrame([{"Strategy": n, **lbo["CF"]} for n, lbo in lbo_metrics.items()]).to_excel(writer, sheet_name="LBO_Returns", index=False)
-        for name, res in results_dict.items():
-            prefix = "Legacy_" if "Legacy" in name else "Opt_"
-            pd.DataFrame([{"Week": w, "China Containers": res["containers_fe"][w], "Poland Trucks": res["trucks_ns"][w], "Total Freight": res["cost_freight"][w]} for w in WEEKS]).to_excel(writer, sheet_name=f"{prefix}Logistics", index=False)
-            for p in ACTIVE_PRODUCTS:
-                prod_data = [{"Week": w, "Demand": DEMAND_ACTUAL[p][w], "Sales": res["sales"][p][w], "Lost Sales": res["shortage"][p][w], "Ending Inv": res["inv"][p][w], "China PO": res["order_fe"][p][w], "Poland PO": res["order_ns"][p][w]} for w in WEEKS]
-                pd.DataFrame(prod_data).to_excel(writer, sheet_name=f"{prefix}{p[:20]}".replace(" ", ""), index=False)
-    return output.getvalue()
-
 # --- 4. SIDEBAR CONTROLS ---
 with st.sidebar:
-    ACTIVE_PRODUCTS, ACTIVE_DEMAND_PARAMS, FINANCIALS = DEFAULT_PRODUCTS, DEMAND_PARAMS, DEFAULT_ECO
+    st.header("Step 1: Data Ingestion")
+    st.download_button("📥 Download Excel Template", data=generate_upload_template(), file_name="PortCo_Data_Template.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    
+    uploaded_file = st.file_uploader("Upload PortCo SKU Data (.xlsx)", type=["xlsx"])
+    
+    if uploaded_file is not None:
+        if st.session_state.last_uploaded_file != uploaded_file.name:
+            df = pd.read_excel(uploaded_file)
+            st.session_state.custom_products, st.session_state.custom_demand, st.session_state.custom_eco = process_uploaded_file(df)
+            st.session_state.last_uploaded_file = uploaded_file.name
+            st.session_state.demand_locked = False # Force regen on new data
+            
+        ACTIVE_PRODUCTS = st.session_state.custom_products
+        ACTIVE_DEMAND_PARAMS = st.session_state.custom_demand
+        FINANCIALS = st.session_state.custom_eco
+        st.success(f"Loaded {len(ACTIVE_PRODUCTS)} SKUs.")
+    else:
+        ACTIVE_PRODUCTS, ACTIVE_DEMAND_PARAMS, FINANCIALS = DEFAULT_PRODUCTS, DEMAND_PARAMS, DEFAULT_ECO
 
-    st.header("Step 1: Market Dynamics")
+    st.markdown("---")
+    st.header("Step 2: Market Dynamics")
     seasonality_ui = st.slider("Q4 Seasonal Peak Variance (%)", 0.0, 50.0, 30.0) / 100.0
     y2_growth_ui = st.slider("Year 2 Market Growth (%)", 0.0, 30.0, 10.0) / 100.0
     
-    if st.button("🔒 Lock 104-Week Actuals", use_container_width=True):
+    if st.button("🔒 Regenerate & Lock Demand", use_container_width=True):
         generate_stochastic_demand(ACTIVE_PRODUCTS, ACTIVE_DEMAND_PARAMS, y2_growth_ui, seasonality_ui)
-        st.success("Locked!")
+        st.success("Demand path locked!")
 
     if not st.session_state.demand_locked:
         np.random.seed(42) 
         generate_stochastic_demand(ACTIVE_PRODUCTS, ACTIVE_DEMAND_PARAMS, y2_growth_ui, seasonality_ui)
     
     st.markdown("---")
-    st.header("Step 2: Strategy& 100-Day Plan")
+    st.header("Step 3: Strategy& 100-Day Plan")
     ve_savings = st.slider("Value Engineering BOM Reduction (%)", 0.0, 15.0, 5.0) / 100.0
     ve_dev_weeks = st.slider("VE Development Lag (Weeks)", 12, 52, 39)
     ve_investment = st.slider("VE One-Time Investment (£)", 0, 1000000, 250000, step=50000)
@@ -89,7 +130,7 @@ with st.sidebar:
     dso_days = st.slider("Accounts Receivable (DSO Days)", 30, 90, 45)
     
     st.markdown("---")
-    st.header("Step 3: LBO Mechanics")
+    st.header("Step 4: LBO Mechanics")
     with st.form("lbo_panel"):
         entry_multiple = st.slider("Exit Multiple (x EBITDA)", 6.0, 15.0, 10.0)
         debt_ratio = st.slider("Debt Funding Ratio (%)", 0.0, 80.0, 65.0) / 100.0
@@ -115,11 +156,9 @@ def run_milp_optimizer(strategy_type):
     order_fe = pulp.LpVariable.dicts("Order_FE", (ACTIVE_PRODUCTS, WEEKS), lowBound=0, cat='Integer')
     order_ns = pulp.LpVariable.dicts("Order_NS", (ACTIVE_PRODUCTS, WEEKS), lowBound=0, cat='Integer')
     
-    # Binary variables to enforce Factory MOQs
     order_fe_bin = pulp.LpVariable.dicts("FE_Bin", (ACTIVE_PRODUCTS, WEEKS), cat='Binary')
     order_ns_bin = pulp.LpVariable.dicts("NS_Bin", (ACTIVE_PRODUCTS, WEEKS), cat='Binary')
     
-    # China is FCL (Integer), Poland is LTL (Continuous)
     containers_fe = pulp.LpVariable.dicts("Containers_FE", WEEKS, lowBound=0, cat='Integer')
     trucks_ns = pulp.LpVariable.dicts("Trucks_NS", WEEKS, lowBound=0, cat='Continuous')
     
@@ -142,10 +181,9 @@ def run_milp_optimizer(strategy_type):
         start_std = ACTIVE_DEMAND_PARAMS[p]["std"] * start_season_idx
         ss_legacy = int(z_fe_start * start_std * math.sqrt(FINANCIALS[p]["fe_lt"]))
         
-        prob += inv[p][0] == int(ACTIVE_DEMAND_PARAMS[p]["mean"] * start_season_idx * 2.5)
+        prob += inv[p][0] == ss_legacy + int(ACTIVE_DEMAND_PARAMS[p]["mean"] * start_season_idx * 0.5)
 
         for w in WEEKS:
-            # MOQ Big-M Constraints
             prob += order_fe[p][w] >= FINANCIALS[p]["fe_moq"] * order_fe_bin[p][w]
             prob += order_fe[p][w] <= BIG_M * order_fe_bin[p][w]
             
@@ -166,7 +204,8 @@ def run_milp_optimizer(strategy_type):
             prob += inv[p][w] >= ss_floor
             
             hist_season = 1 + seasonality_ui * math.sin(2 * math.pi * ((w - FINANCIALS[p]["fe_lt"]) - 32) / 52)
-            arr_fe = order_fe[p][w - FINANCIALS[p]["fe_lt"]] if w > FINANCIALS[p]["fe_lt"] else int(ACTIVE_DEMAND_PARAMS[p]["mean"] * hist_season)
+            expected_demand = int(ACTIVE_DEMAND_PARAMS[p]["mean"] * hist_season)
+            arr_fe = order_fe[p][w - FINANCIALS[p]["fe_lt"]] if w > FINANCIALS[p]["fe_lt"] else expected_demand
             arr_ns = order_ns[p][w - FINANCIALS[p]["ns_lt"]] if w > FINANCIALS[p]["ns_lt"] else 0
 
             if is_legacy: 
@@ -201,8 +240,7 @@ def run_milp_optimizer(strategy_type):
     prob += (revenue + salvage_value) - (purchases_fe + purchases_ns + freight + holding + penalties + ve_cost)
     
     try:
-        # Give the solver up to 30 seconds due to the heavy binary MOQ logic
-        prob.solve(pulp.PULP_CBC_CMD(msg=0, timeLimit=30, gapRel=0.05))
+        prob.solve(pulp.PULP_CBC_CMD(msg=0, timeLimit=20, gapRel=0.03))
     except:
         prob.solve()
     
@@ -288,13 +326,25 @@ def generate_three_statements(res, is_baseline, entry_ebitda=None):
         "CF": {"Y1 FCF": y1_fcf, "Y2 FCF": y2_fcf, "MOIC": exit_equity / entry_equity if entry_equity > 0 else 0, "Exit EV": exit_ev}
     }
 
-# --- 7. STATE MANAGEMENT FOR THE SOLVER ---
+def generate_excel_export(results_dict, lbo_metrics):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        pd.DataFrame([{"Strategy": n, **lbo["CF"]} for n, lbo in lbo_metrics.items()]).to_excel(writer, sheet_name="LBO_Returns", index=False)
+        for name, res in results_dict.items():
+            prefix = "Legacy_" if "Legacy" in name else "Opt_"
+            pd.DataFrame([{"Week": w, "China Containers": res["containers_fe"][w], "Poland Trucks": res["trucks_ns"][w], "Total Freight": res["cost_freight"][w]} for w in WEEKS]).to_excel(writer, sheet_name=f"{prefix}Logistics", index=False)
+            for p in ACTIVE_PRODUCTS:
+                prod_data = [{"Week": w, "Demand": DEMAND_ACTUAL[p][w], "Sales": res["sales"][p][w], "Lost Sales": res["shortage"][p][w], "Ending Inv": res["inv"][p][w], "China PO": res["order_fe"][p][w], "Poland PO": res["order_ns"][p][w]} for w in WEEKS]
+                pd.DataFrame(prod_data).to_excel(writer, sheet_name=f"{prefix}{p[:20]}".replace(" ", ""), index=False)
+    return output.getvalue()
+
+# --- 7. STATE MANAGEMENT ---
 if 'results' not in st.session_state:
     st.session_state.results = None
     st.session_state.lbo_results = None
 
 if submitted:
-    with st.spinner("Analyzing Pre-Deal Baseline (Legacy China)... This may take up to 30s due to MOQ binary logic."):
+    with st.spinner("Analyzing Pre-Deal Baseline (Legacy China)..."):
         res_leg = run_milp_optimizer("Legacy (China Only)")
         stmt_leg = generate_three_statements(res_leg, True)
 
@@ -307,19 +357,19 @@ if submitted:
 
 # --- 8. DASHBOARDS ---
 if st.session_state.results is None:
-    st.info("👋 Welcome to the Value Creation Digital Twin. Configure your levers in the sidebar and click **Run 3-Statement Optimizer** to begin.")
+    st.info("👋 Welcome to the Value Creation Digital Twin. Upload your PortCo Data, configure your levers, and click **Run 3-Statement Optimizer**.")
 else:
     results = st.session_state.results
     lbo_results = st.session_state.lbo_results
 
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 3-Statement LBO Model", "📦 Ending Inventory Sawtooth", "📈 Value Creation Bridge", "📥 Excel Export"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 3-Statement LBO", "📦 Ending Inventory", "📈 Value Bridge", "📥 Export"])
 
     with tab1:
-        st.subheader("CFO View: The GAAP 3-Statement Financial Rollout")
+        st.subheader("CFO View: GAAP 3-Statement Financial Rollout")
         
         st.markdown("### 1. Income Statement (Hold Period)")
         is_data = {
-            "Line Item": ["Revenue", "COGS (GAAP Matching)", "SG&A Overhead", "OPEX (Holding/Freight/VE Invest)", "EBITDA"],
+            "Line Item": ["Revenue", "COGS", "SG&A Overhead", "OPEX (Holding/Freight/VE Invest)", "EBITDA"],
             "Legacy Y1": [f"£{lbo_results['Legacy (Baseline)']['IS']['Y1 Rev']:,.0f}", f"£{lbo_results['Legacy (Baseline)']['IS']['Y1 COGS']:,.0f}", f"£{lbo_results['Legacy (Baseline)']['IS']['Y1 SGA']:,.0f}", f"£{lbo_results['Legacy (Baseline)']['IS']['Y1 OPEX']:,.0f}", f"£{lbo_results['Legacy (Baseline)']['IS']['Y1 EBITDA']:,.0f}"],
             "Legacy Y2": [f"£{lbo_results['Legacy (Baseline)']['IS']['Y2 Rev']:,.0f}", f"£{lbo_results['Legacy (Baseline)']['IS']['Y2 COGS']:,.0f}", f"£{lbo_results['Legacy (Baseline)']['IS']['Y2 SGA']:,.0f}", f"£{lbo_results['Legacy (Baseline)']['IS']['Y2 OPEX']:,.0f}", f"£{lbo_results['Legacy (Baseline)']['IS']['Y2 EBITDA']:,.0f}"],
             "Opt 100-Day Y1": [f"£{lbo_results['Strategy& 100-Day Plan']['IS']['Y1 Rev']:,.0f}", f"£{lbo_results['Strategy& 100-Day Plan']['IS']['Y1 COGS']:,.0f}", f"£{lbo_results['Strategy& 100-Day Plan']['IS']['Y1 SGA']:,.0f}", f"£{lbo_results['Strategy& 100-Day Plan']['IS']['Y1 OPEX']:,.0f}", f"£{lbo_results['Strategy& 100-Day Plan']['IS']['Y1 EBITDA']:,.0f}"],
@@ -331,16 +381,16 @@ else:
         with col1:
             st.markdown("### 2. Balance Sheet (Exit View)")
             bs_data = {
-                "Line Item": ["Assets: Operating Cash", "Assets: PP&E", "Assets: Inventory", "Assets: Accts Receivable", "Liabilities: Accts Payable", "Liabilities: LBO Debt"],
-                "Legacy (Exit Y2)": [f"£{lbo_results['Legacy (Baseline)']['BS']['Cash']:,.0f}", f"£{lbo_results['Legacy (Baseline)']['BS']['PPE']:,.0f}", f"£{lbo_results['Legacy (Baseline)']['BS']['Inv 2']:,.0f}", f"£{lbo_results['Legacy (Baseline)']['BS']['AR 2']:,.0f}", f"£{-lbo_results['Legacy (Baseline)']['BS']['AP 2']:,.0f}", f"£{-lbo_results['Legacy (Baseline)']['BS']['Debt 2']:,.0f}"],
-                "Opt 100-Day (Exit Y2)": [f"£{lbo_results['Strategy& 100-Day Plan']['BS']['Cash']:,.0f}", f"£{lbo_results['Strategy& 100-Day Plan']['BS']['PPE']:,.0f}", f"£{lbo_results['Strategy& 100-Day Plan']['BS']['Inv 2']:,.0f}", f"£{lbo_results['Strategy& 100-Day Plan']['BS']['AR 2']:,.0f}", f"£{-lbo_results['Strategy& 100-Day Plan']['BS']['AP 2']:,.0f}", f"£{-lbo_results['Strategy& 100-Day Plan']['BS']['Debt 2']:,.0f}"]
+                "Line Item": ["Operating Cash", "PP&E", "Inventory", "Accts Receivable", "Accts Payable", "LBO Debt"],
+                "Legacy (Exit)": [f"£{lbo_results['Legacy (Baseline)']['BS']['Cash']:,.0f}", f"£{lbo_results['Legacy (Baseline)']['BS']['PPE']:,.0f}", f"£{lbo_results['Legacy (Baseline)']['BS']['Inv 2']:,.0f}", f"£{lbo_results['Legacy (Baseline)']['BS']['AR 2']:,.0f}", f"£{-lbo_results['Legacy (Baseline)']['BS']['AP 2']:,.0f}", f"£{-lbo_results['Legacy (Baseline)']['BS']['Debt 2']:,.0f}"],
+                "Opt (Exit)": [f"£{lbo_results['Strategy& 100-Day Plan']['BS']['Cash']:,.0f}", f"£{lbo_results['Strategy& 100-Day Plan']['BS']['PPE']:,.0f}", f"£{lbo_results['Strategy& 100-Day Plan']['BS']['Inv 2']:,.0f}", f"£{lbo_results['Strategy& 100-Day Plan']['BS']['AR 2']:,.0f}", f"£{-lbo_results['Strategy& 100-Day Plan']['BS']['AP 2']:,.0f}", f"£{-lbo_results['Strategy& 100-Day Plan']['BS']['Debt 2']:,.0f}"]
             }
             st.table(pd.DataFrame(bs_data).set_index("Line Item"))
             
         with col2:
             st.markdown("### 3. Cash Flow & Returns")
             cf_data = {
-                "Line Item": ["Free Cash Flow (Y1)", "Free Cash Flow (Y2)", "Exit Enterprise Value", "Equity MOIC"],
+                "Line Item": ["FCF (Y1)", "FCF (Y2)", "Exit Enterprise Value", "Equity MOIC"],
                 "Legacy": [f"£{lbo_results['Legacy (Baseline)']['CF']['Y1 FCF']:,.0f}", f"£{lbo_results['Legacy (Baseline)']['CF']['Y2 FCF']:,.0f}", f"£{lbo_results['Legacy (Baseline)']['CF']['Exit EV']:,.0f}", f"{lbo_results['Legacy (Baseline)']['CF']['MOIC']:.2f}x"],
                 "Opt 100-Day": [f"£{lbo_results['Strategy& 100-Day Plan']['CF']['Y1 FCF']:,.0f}", f"£{lbo_results['Strategy& 100-Day Plan']['CF']['Y2 FCF']:,.0f}", f"£{lbo_results['Strategy& 100-Day Plan']['CF']['Exit EV']:,.0f}", f"{lbo_results['Strategy& 100-Day Plan']['CF']['MOIC']:.2f}x"]
             }
@@ -374,5 +424,5 @@ else:
         st.table(pd.DataFrame(bridge_data).set_index("Value Driver"))
 
     with tab4:
-        st.subheader("Data Export")
-        st.download_button("📥 Download Complete CFO Ledger (.xlsx)", data=generate_cfo_ledger(results, lbo_results), file_name="PE_100_Day_Audit.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
+        st.subheader("Full CFO Audit Download")
+        st.download_button("📥 Download PE Audit Ledger (.xlsx)", data=generate_excel_export(results, lbo_results), file_name="PE_100_Day_Audit.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")

@@ -59,6 +59,7 @@ def generate_cfo_ledger(results_dict, lbo_metrics):
             prefix = "Legacy_" if "Legacy" in name else "Opt_"
             pd.DataFrame([{"Week": w, "China Containers": res["containers_fe"][w], "Poland Trucks": res["trucks_ns"][w], "Total Freight": res["cost_freight"][w]} for w in WEEKS]).to_excel(writer, sheet_name=f"{prefix}Logistics", index=False)
             for p in ACTIVE_PRODUCTS:
+                # Matches the graph output perfectly (Ending Inv)
                 prod_data = [{"Week": w, "Demand": DEMAND_ACTUAL[p][w], "Sales": res["sales"][p][w], "Lost Sales": res["shortage"][p][w], "Ending Inv": res["inv"][p][w], "China PO": res["order_fe"][p][w], "Poland PO": res["order_ns"][p][w]} for w in WEEKS]
                 pd.DataFrame(prod_data).to_excel(writer, sheet_name=f"{prefix}{p[:20]}".replace(" ", ""), index=False)
     return output.getvalue()
@@ -103,7 +104,6 @@ with st.sidebar:
         holding_cost = st.slider("UK 3PL Storage (£/unit/wk)", 0.05, 0.50, 0.35)
         stockout_penalty = st.slider("Lost Sale Penalty (£/unit)", 20, 150, 80)
         corp_tax = 0.25 
-        
         submitted = st.form_submit_button("🚀 Run 3-Statement Optimizer")
 
 DEMAND_ACTUAL = st.session_state.actual_demand
@@ -128,14 +128,10 @@ def run_milp_optimizer(strategy_type):
 
     for p in ACTIVE_PRODUCTS:
         cu = stockout_penalty
-        co_fe_start = (holding_cost + wacc_weekly * FINANCIALS[p]["fe_fob"]) * FINANCIALS[p]["fe_lt"]
-        z_fe_start = norm.ppf(cu / (cu + co_fe_start))
         
-        start_season_idx = 1 + seasonality_ui * math.sin(2 * math.pi * (1 - 32) / 52)
-        start_std = ACTIVE_DEMAND_PARAMS[p]["std"] * start_season_idx
-        ss_legacy = int(z_fe_start * start_std * math.sqrt(FINANCIALS[p]["fe_lt"]))
-        
-        prob += inv[p][0] == int(ACTIVE_DEMAND_PARAMS[p]["mean"] * start_season_idx * 2) + ss_legacy
+        # FIX: Hardcode a sane, transparent starting point (2.5x Mean Demand). 
+        # Smart Thermostat = exactly 5000 units.
+        prob += inv[p][0] == int(ACTIVE_DEMAND_PARAMS[p]["mean"] * 2.5)
 
         for w in WEEKS:
             season_idx = 1 + seasonality_ui * math.sin(2 * math.pi * (w - 32) / 52)
@@ -151,6 +147,7 @@ def run_milp_optimizer(strategy_type):
 
             prob += inv[p][w] >= ss_floor
             
+            # Historical pipeline matches mean demand so inventory stays stable instead of spiking
             hist_season = 1 + seasonality_ui * math.sin(2 * math.pi * ((w - FINANCIALS[p]["fe_lt"]) - 32) / 52)
             arr_fe = order_fe[p][w - FINANCIALS[p]["fe_lt"]] if w > FINANCIALS[p]["fe_lt"] else int(ACTIVE_DEMAND_PARAMS[p]["mean"] * hist_season)
             arr_ns = order_ns[p][w - FINANCIALS[p]["ns_lt"]] if w > FINANCIALS[p]["ns_lt"] else 0
@@ -181,7 +178,6 @@ def run_milp_optimizer(strategy_type):
     prob += (revenue + salvage_value) - (purchases_fe + purchases_ns + freight + holding + penalties + ve_cost)
     
     try:
-        # Fallback in case CBC is misconfigured in the environment
         prob.solve(pulp.PULP_CBC_CMD(msg=0, timeLimit=20, gapRel=0.03))
     except:
         prob.solve()
@@ -190,7 +186,6 @@ def run_milp_optimizer(strategy_type):
     return {
         "sales": {p: {w: int(get_val(sales[p][w])) for w in WEEKS} for p in ACTIVE_PRODUCTS},
         "inv": {p: {w: int(get_val(inv[p][w])) for w in WEEKS} for p in ACTIVE_PRODUCTS},
-        "inv_pre_sale": {p: {w: int(get_val(inv[p][w]) + get_val(sales[p][w])) for w in WEEKS} for p in ACTIVE_PRODUCTS},
         "inv_0": {p: int(get_val(inv[p][0])) for p in ACTIVE_PRODUCTS},
         "order_fe": {p: {w: int(get_val(order_fe[p][w])) for w in WEEKS} for p in ACTIVE_PRODUCTS},
         "order_ns": {p: {w: int(get_val(order_ns[p][w])) for w in WEEKS} for p in ACTIVE_PRODUCTS},
@@ -293,7 +288,7 @@ else:
     results = st.session_state.results
     lbo_results = st.session_state.lbo_results
 
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 3-Statement LBO Model", "📦 Available Inventory Sawtooth", "📈 Value Creation Bridge", "📥 Excel Export"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 3-Statement LBO Model", "📦 Ending Inventory Sawtooth", "📈 Value Creation Bridge", "📥 Excel Export"])
 
     with tab1:
         st.subheader("CFO View: The GAAP 3-Statement Financial Rollout")
@@ -328,15 +323,16 @@ else:
             st.table(pd.DataFrame(cf_data).set_index("Line Item"))
 
     with tab2:
-        st.subheader("Operations: Available Pre-Sale Inventory Sawtooth")
+        st.subheader("Operations: Ending Inventory Sawtooth")
         view_prod = st.selectbox("Select Product to Graph:", ACTIVE_PRODUCTS)
         
         chart_data = [{"Week": w, "Metric": "Actual Seasonal Demand", "Units": int(DEMAND_ACTUAL[view_prod][w])} for w in WEEKS]
         for name, res in results.items():
-            chart_data.extend([{"Week": w, "Metric": f"Available Inv ({name})", "Units": int(res["inv_pre_sale"][view_prod][w])} for w in WEEKS])
+            # FIX: Plotted exactly as Ending Inventory to strictly match the downloadable spreadsheet
+            chart_data.extend([{"Week": w, "Metric": f"Ending Inv ({name})", "Units": int(res["inv"][view_prod][w])} for w in WEEKS])
                 
         c_df = pd.DataFrame(chart_data)
-        domain = ["Actual Seasonal Demand", "Available Inv (Legacy (Baseline))", "Available Inv (Strategy& 100-Day Plan)"]
+        domain = ["Actual Seasonal Demand", "Ending Inv (Legacy (Baseline))", "Ending Inv (Strategy& 100-Day Plan)"]
         range_ = ['#FF4B4B', '#1f77b4', '#2ca02c']
         
         chart = alt.Chart(c_df).mark_line(strokeWidth=3).encode(

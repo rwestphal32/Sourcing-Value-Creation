@@ -8,26 +8,26 @@ import altair as alt
 st.set_page_config(page_title="PwC Strategy& Value Creation: Sourcing Twin", layout="wide")
 
 st.title("🌍 PE Value Creation: Strategic Sourcing & Working Capital Twin")
-st.markdown("**Context:** Post-Deal 100-Day Plan for a UK-based Wholesaler. Evaluate shifting from a 100% Far-East (Shenzhen) supply chain to a Dual-Sourcing mix (Shenzhen + Nearshore Warsaw) to optimize Working Capital and Service Level.")
+st.markdown("**Context:** Post-Deal 100-Day Plan for a UK-based Smart Home Electronics brand. Evaluate shifting from a 100% Far-East (Shenzhen) supply chain to a Dual-Sourcing mix (Shenzhen + Nearshore Warsaw) to optimize Working Capital and Service Level.")
 
 # --- 1. CONFIGURATION & GENERIC DATA ---
 WEEKS = list(range(1, 53))
-DEFAULT_PRODUCTS = ["Lifting Straps", "Weight Belts", "Knee Sleeves", "Gloves"]
+DEFAULT_PRODUCTS = ["Smart Thermostat", "HD Security Camera", "Wi-Fi Mesh Router", "Smart Plug (4-Pack)"]
 
-# Default Demand Params
+# Default Demand Params (High Volume, volatile consumer tech)
 DEMAND_PARAMS = {
-    "Lifting Straps": {"mean": 3252, "std": 600},
-    "Weight Belts": {"mean": 1800, "std": 450},
-    "Knee Sleeves": {"mean": 1000, "std": 300},
-    "Gloves": {"mean": 3000, "std": 800}
+    "Smart Thermostat": {"mean": 2000, "std": 400},
+    "HD Security Camera": {"mean": 3500, "std": 800},
+    "Wi-Fi Mesh Router": {"mean": 1200, "std": 300},
+    "Smart Plug (4-Pack)": {"mean": 5000, "std": 1000}
 }
 
-# Supplier Economics (Far-East vs Nearshore)
+# Supplier Economics (Consumer Electronics Profile)
 DEFAULT_ECO = {
-    "Lifting Straps": {"price": 15.0, "fe_fob": 3.0, "fe_freight": 0.5, "fe_lt": 10, "fe_moq": 15000, "ns_fob": 4.2, "ns_freight": 0.2, "ns_lt": 2, "ns_moq": 1000},
-    "Weight Belts": {"price": 45.0, "fe_fob": 12.0, "fe_freight": 1.5, "fe_lt": 10, "fe_moq": 8000, "ns_fob": 16.0, "ns_freight": 0.8, "ns_lt": 2, "ns_moq": 500},
-    "Knee Sleeves": {"price": 35.0, "fe_fob": 8.0, "fe_freight": 0.8, "fe_lt": 10, "fe_moq": 5000, "ns_fob": 11.5, "ns_freight": 0.4, "ns_lt": 2, "ns_moq": 500},
-    "Gloves": {"price": 20.0, "fe_fob": 4.0, "fe_freight": 0.4, "fe_lt": 10, "fe_moq": 15000, "ns_fob": 5.8, "ns_freight": 0.2, "ns_lt": 2, "ns_moq": 1000}
+    "Smart Thermostat": {"price": 120.0, "fe_fob": 35.0, "fe_freight": 1.5, "fe_lt": 10, "fe_moq": 10000, "ns_fob": 45.0, "ns_freight": 0.8, "ns_lt": 2, "ns_moq": 1000},
+    "HD Security Camera": {"price": 85.0, "fe_fob": 22.0, "fe_freight": 1.0, "fe_lt": 10, "fe_moq": 15000, "ns_fob": 29.0, "ns_freight": 0.4, "ns_lt": 2, "ns_moq": 2000},
+    "Wi-Fi Mesh Router": {"price": 150.0, "fe_fob": 45.0, "fe_freight": 2.5, "fe_lt": 10, "fe_moq": 8000, "ns_fob": 58.0, "ns_freight": 1.0, "ns_lt": 2, "ns_moq": 1000},
+    "Smart Plug (4-Pack)": {"price": 30.0, "fe_fob": 8.0, "fe_freight": 0.5, "fe_lt": 10, "fe_moq": 20000, "ns_fob": 11.0, "ns_freight": 0.2, "ns_lt": 2, "ns_moq": 3000}
 }
 
 # --- 2. EXCEL TEMPLATE GENERATOR ---
@@ -104,8 +104,8 @@ with st.sidebar:
         wacc_annual = st.slider("Cost of Capital (Annual WACC %)", 5.0, 25.0, 12.0) / 100.0
         wacc_weekly = wacc_annual / 52.0
         
-        holding_cost = st.slider("UK 3PL Storage (£/unit/wk)", 0.1, 1.0, 0.2)
-        stockout_penalty = st.slider("Lost Sale Penalty (£/unit)", 10, 100, 40)
+        holding_cost = st.slider("UK 3PL Storage (£/unit/wk)", 0.1, 1.0, 0.3)
+        stockout_penalty = st.slider("Lost Sale Penalty (£/unit)", 20, 150, 60)
         
         corp_tax = 0.25 
         submitted = st.form_submit_button("🚀 Run 52-Week Optimizer")
@@ -160,7 +160,6 @@ def solve_sourcing(strategy_type):
             return order_ns[p][w - lt]
 
         for w in WEEKS:
-            # MOQ Constraints
             prob += order_fe[p][w] >= FINANCIALS[p]["fe_moq"] * order_fe_bin[p][w]
             prob += order_fe[p][w] <= BIG_M * order_fe_bin[p][w]
             
@@ -181,7 +180,6 @@ def solve_sourcing(strategy_type):
     holding = pulp.lpSum([inv[p][w] * holding_cost for p in ACTIVE_PRODUCTS for w in WEEKS])
     lost_sales_cost = pulp.lpSum([shortage[p][w] * stockout_penalty for p in ACTIVE_PRODUCTS for w in WEEKS])
     
-    # Working Capital Costs
     wacc_transit_fe = pulp.lpSum([order_fe[p][w] * FINANCIALS[p]["fe_fob"] * FINANCIALS[p]["fe_lt"] * wacc_weekly for p in ACTIVE_PRODUCTS for w in WEEKS])
     wacc_transit_ns = pulp.lpSum([order_ns[p][w] * FINANCIALS[p]["ns_fob"] * FINANCIALS[p]["ns_lt"] * wacc_weekly for p in ACTIVE_PRODUCTS for w in WEEKS])
     wacc_on_hand = pulp.lpSum([inv[p][w] * FINANCIALS[p]["fe_fob"] * wacc_weekly for p in ACTIVE_PRODUCTS for w in WEEKS])
@@ -240,7 +238,6 @@ tab1, tab2, tab3, tab4 = st.tabs(["📊 CFO Exec Summary", "💰 Total Landed P&
 with tab1:
     st.subheader("Working Capital & ROI Performance")
     
-    # Render metrics side-by-side if comparison mode
     cols = st.columns(len(results))
     for i, (name, res) in enumerate(results.items()):
         m = res["metrics"]
@@ -252,7 +249,7 @@ with tab1:
             st.metric("Customer Service Level", f"{m['sl']:.1f}%")
     
     st.markdown("---")
-    st.info("💡 **Strategy& Value Creation Thesis:** By blending cheaper Far-East supply with agile Nearshore supply, the business can drastically reduce safety stock and in-transit cash, eliminating lost sales and yielding a significantly higher Return on Invested Capital (ROIC).")
+    st.info("💡 **Strategy& Value Creation Thesis:** Notice how ROIC skyrockets when Dual-Sourcing is activated, despite paying Eastern Europe a higher FOB unit cost. By utilizing the agile 2-week lead time, the business drastically reduces safety stock and in-transit cash, eliminating stockouts and freeing up working capital.")
 
 with tab2:
     st.subheader("Annual P&L & Landed Costs")
@@ -273,7 +270,6 @@ with tab3:
     st.subheader("Operations: Total Inventory Cushion Overlay")
     
     chart_data = []
-    # Aggregate total demand and inventory across all products for the chart
     for w in WEEKS:
         tot_dem = sum([DEMAND[p][w] for p in ACTIVE_PRODUCTS])
         chart_data.append({"Week": w, "Metric": "Total Customer Demand", "Units": tot_dem})
@@ -283,8 +279,6 @@ with tab3:
             chart_data.append({"Week": w, "Metric": f"UK Inventory ({name})", "Units": int(tot_inv)})
     
     c_df = pd.DataFrame(chart_data)
-    
-    # Custom color mapping to ensure Demand is distinct
     domain = ["Total Customer Demand"] + [f"UK Inventory ({name})" for name in results.keys()]
     range_ = ['#FF4B4B'] + ['#1f77b4', '#2ca02c'][:len(results)]
     
@@ -299,7 +293,6 @@ with tab3:
 with tab4:
     st.subheader("Optimal PO Routing Schedule")
     
-    # If in compare mode, select which one to view
     if len(results) > 1:
         view_target = st.selectbox("Select Strategy to View Schedule:", list(results.keys()))
     else:
@@ -315,8 +308,8 @@ with tab4:
         po_data.append({
             "Week": w,
             "UK Demand": DEMAND[prod_target][w],
-            "PO -> Far-East": fe_val if fe_val > 0 else "-",
-            "PO -> Nearshore": ns_val if ns_val > 0 else "-",
+            "PO -> Far-East (10 Wks)": fe_val if fe_val > 0 else "-",
+            "PO -> Nearshore (2 Wks)": ns_val if ns_val > 0 else "-",
             "Ending UK Inv": int(get_val(res["inv"][prod_target][w])),
             "Lost Sales": int(get_val(res["shortage"][prod_target][w]))
         })

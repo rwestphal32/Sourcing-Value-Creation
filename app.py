@@ -8,53 +8,35 @@ import altair as alt
 st.set_page_config(page_title="Strategy& Value Creation: Sourcing Twin", layout="wide")
 
 st.title("🌍 PE Value Creation: Total Landed Cost & Network Twin")
-st.markdown("**Context:** Post-Deal 100-Day Plan for a UK-based Smart Home Electronics brand. We are transitioning away from unit-cost obsession to a true **Total Landed Cost** model (FOB + Tariffs + Fixed Container Yield + Working Capital).")
+st.markdown("**Context:** Post-Deal 100-Day Plan for a UK-based Smart Home Electronics brand. Moving from Unit-Cost obsession to a Total Landed Cost model (FOB + Tariffs + Container Yield + Working Capital).")
 
-# --- 1. CONFIGURATION & GENERIC DATA ---
+# --- 1. CONFIGURATION & REALISTIC DATA ---
 WEEKS = list(range(1, 27)) # 26-Week Half-Year Horizon
 DEFAULT_PRODUCTS = ["Smart Thermostat", "HD Security Camera", "Wi-Fi Mesh Router", "Smart Plug (4-Pack)"]
 
 # Demand Params
 DEMAND_PARAMS = {
-    "Smart Thermostat": {"mean": 2000, "std": 500},
-    "HD Security Camera": {"mean": 3500, "std": 900},
-    "Wi-Fi Mesh Router": {"mean": 1200, "std": 350},
-    "Smart Plug (4-Pack)": {"mean": 5000, "std": 1200}
+    "Smart Thermostat": {"mean": 2000, "std": 450},
+    "HD Security Camera": {"mean": 3500, "std": 800},
+    "Wi-Fi Mesh Router": {"mean": 1200, "std": 300},
+    "Smart Plug (4-Pack)": {"mean": 5000, "std": 1000}
 }
 
-# Real-world volumetrics (CBM) and FOB pricing
-# Notice Poland has NO freight cost per unit, freight is handled strictly by the truck/container
+# REALISTIC ECONOMICS: Narrower FOB gap, realistic CBMs
 DEFAULT_ECO = {
-    "Smart Thermostat": {"price": 120.0, "unit_cbm": 0.005, "fe_fob": 35.0, "fe_lt": 10, "ns_fob": 45.0, "ns_lt": 2},
-    "HD Security Camera": {"price": 85.0, "unit_cbm": 0.003, "fe_fob": 22.0, "fe_lt": 10, "ns_fob": 29.0, "ns_lt": 2},
-    "Wi-Fi Mesh Router": {"price": 150.0, "unit_cbm": 0.015, "fe_fob": 45.0, "fe_lt": 10, "ns_fob": 58.0, "ns_lt": 2},
-    "Smart Plug (4-Pack)": {"price": 30.0, "unit_cbm": 0.002, "fe_fob": 8.0, "fe_lt": 10, "ns_fob": 11.0, "ns_lt": 2}
+    "Smart Thermostat": {"price": 120.0, "unit_cbm": 0.005, "fe_fob": 35.0, "fe_lt": 10, "ns_fob": 39.0, "ns_lt": 2},
+    "HD Security Camera": {"price": 85.0, "unit_cbm": 0.003, "fe_fob": 22.0, "fe_lt": 10, "ns_fob": 25.0, "ns_lt": 2},
+    "Wi-Fi Mesh Router": {"price": 150.0, "unit_cbm": 0.015, "fe_fob": 45.0, "fe_lt": 10, "ns_fob": 51.0, "ns_lt": 2},
+    "Smart Plug (4-Pack)": {"price": 30.0, "unit_cbm": 0.002, "fe_fob": 8.0, "fe_lt": 10, "ns_fob": 10.0, "ns_lt": 2}
 }
 
-# Fixed Logistics Constraints
-FE_CONTAINER_CBM = 68.0   # 40ft High Cube Container
-FE_CONTAINER_COST = 3500  # Cost per ocean container
-NS_TRUCK_CBM = 80.0       # Standard Lorry Trailer
-NS_TRUCK_COST = 1200      # Cost per overland truck
+# Real-world Logistics Constraints (Post-Red Sea Crisis)
+FE_CONTAINER_CBM = 68.0   
+FE_CONTAINER_COST = 6500  # China -> UK Ocean (40ft HC)
+NS_TRUCK_CBM = 80.0       
+NS_TRUCK_COST = 2500      # Poland -> UK Lorry
 
-# --- 2. EXCEL TEMPLATE GENERATOR ---
-def generate_excel_template():
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        eco_rows = []
-        for p, data in DEFAULT_ECO.items():
-            eco_rows.append({
-                "Product": p, "Retail_Price": data["price"], "Unit_Volume_CBM": data["unit_cbm"],
-                "FarEast_FOB": data["fe_fob"], "FarEast_LeadTime_Wks": data["fe_lt"],
-                "Nearshore_FOB": data["ns_fob"], "Nearshore_LeadTime_Wks": data["ns_lt"]
-            })
-        pd.DataFrame(eco_rows).to_excel(writer, sheet_name="Supplier_Economics", index=False)
-        
-        dem_rows = [{"Product": p, "Mean Weekly Demand": DEMAND_PARAMS[p]["mean"], "St Dev": DEMAND_PARAMS[p]["std"]} for p in DEFAULT_PRODUCTS]
-        pd.DataFrame(dem_rows).to_excel(writer, sheet_name="Demand_Forecast", index=False)
-    return output.getvalue()
-
-# --- 3. STATE MANAGEMENT ---
+# --- 2. STATE MANAGEMENT ---
 if 'demand_locked' not in st.session_state:
     st.session_state.demand_locked = False
     st.session_state.demand_path = {}
@@ -69,29 +51,76 @@ def generate_stochastic_demand(products_list, params_dict):
     st.session_state.demand_path = path
     st.session_state.demand_locked = True
 
+# --- 3. CFO LEDGER EXPORT ENGINE ---
+def generate_cfo_ledger(results_dict):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        # 1. Executive KPI Summary
+        kpi_data = []
+        for name, res in results_dict.items():
+            m = res["metrics"]
+            kpi_data.append({
+                "Strategy": name, "EBITDA": m["ebitda"], "Avg Working Capital": m["wc"], 
+                "Annualized ROIC (%)": m["roic"]*2, "Service Level (%)": m["sl"], 
+                "Total Sales": m["t_rev"], "Total COGS": m["t_cogs"], "Total Logistics": m["t_freight"], 
+                "Total 3PL Holding": m["t_holding"], "Total WACC Cost": m["t_wacc"], "Lost Sales Cost": m["t_lost"]
+            })
+        pd.DataFrame(kpi_data).to_excel(writer, sheet_name="Executive_KPIs", index=False)
+        
+        # 2. Detailed Data per Strategy
+        for name, res in results_dict.items():
+            prefix = "Legacy_" if "Legacy" in name else "Dual_"
+            
+            # Logistics Ledger
+            log_data = []
+            for w in WEEKS:
+                c_fe = int(get_val(res["containers_fe"][w]))
+                t_ns = int(get_val(res["trucks_ns"][w]))
+                fe_cbm = sum([get_val(res["order_fe"][p][w]) * FINANCIALS[p]["unit_cbm"] for p in ACTIVE_PRODUCTS])
+                ns_cbm = sum([get_val(res["order_ns"][p][w]) * FINANCIALS[p]["unit_cbm"] for p in ACTIVE_PRODUCTS])
+                log_data.append({
+                    "Week": w, "China Containers Booked": c_fe, "China CBM Used": fe_cbm, "China Container Yield %": (fe_cbm/(c_fe*FE_CONTAINER_CBM))*100 if c_fe>0 else 0,
+                    "Poland Trucks Booked": t_ns, "Poland CBM Used": ns_cbm, "Poland Truck Yield %": (ns_cbm/(t_ns*NS_TRUCK_CBM))*100 if t_ns>0 else 0,
+                    "Total Weekly Freight Cost": (c_fe*FE_CONTAINER_COST) + (t_ns*NS_TRUCK_COST)
+                })
+            pd.DataFrame(log_data).to_excel(writer, sheet_name=f"{prefix}Logistics", index=False)
+            
+            # Product Level Ledgers
+            for p in ACTIVE_PRODUCTS:
+                prod_data = []
+                for w in WEEKS:
+                    prod_data.append({
+                        "Week": w,
+                        "Demand": DEMAND[p][w],
+                        "Sales Fulfilled": int(get_val(res["sales"][p][w])),
+                        "Lost Sales (Shortage)": int(get_val(res["shortage"][p][w])),
+                        "Ending Inventory": int(get_val(res["inv"][p][w])),
+                        "PO Placed to China": int(get_val(res["order_fe"][p][w])),
+                        "PO Placed to Poland": int(get_val(res["order_ns"][p][w])),
+                        "China Units Arriving": int(get_val(res["order_fe"][p][w - int(FINANCIALS[p]["fe_lt"])])) if w > FINANCIALS[p]["fe_lt"] else int(ACTIVE_DEMAND_PARAMS[p]["mean"]),
+                        "Poland Units Arriving": int(get_val(res["order_ns"][p][w - int(FINANCIALS[p]["ns_lt"])])) if w > FINANCIALS[p]["ns_lt"] else 0,
+                        "WACC Cost Incurred (£)": (int(get_val(res["inv"][p][w])) * FINANCIALS[p]["fe_fob"] * wacc_weekly)
+                    })
+                # Truncate sheet name to avoid Excel 31-char limit
+                sheet_name = f"{prefix}{p[:20]}".replace(" ", "")
+                pd.DataFrame(prod_data).to_excel(writer, sheet_name=sheet_name, index=False)
+                
+    return output.getvalue()
+
 # --- 4. SIDEBAR CONTROLS ---
 with st.sidebar:
-    st.header("📂 Data Integration")
-    st.download_button("📥 Download Master Template", data=generate_excel_template(), file_name="sourcing_digital_twin.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_template")
-    uploaded_file = st.file_uploader("Upload Configured Excel", type=["xlsx"])
-    
-    st.markdown("---")
+    st.header("📂 Market Data")
     
     ACTIVE_PRODUCTS = DEFAULT_PRODUCTS
     ACTIVE_DEMAND_PARAMS = DEMAND_PARAMS
-    if uploaded_file is not None:
-        try:
-            f_df = pd.read_excel(uploaded_file, sheet_name="Demand_Forecast")
-            ACTIVE_PRODUCTS = f_df["Product"].tolist()
-            ACTIVE_DEMAND_PARAMS = {row["Product"]: {"mean": row["Mean Weekly Demand"], "std": row["St Dev"]} for _, row in f_df.iterrows()}
-        except Exception:
-            st.warning("Could not read Demand_Forecast sheet. Using defaults.")
+    FINANCIALS = DEFAULT_ECO
 
-    st.header("Step 1: Baseline Forecasting")
     st.info("Lock in the UK market volatility to ensure fair scenario testing.")
-    if st.button("🔒 Lock 26-Week Demand Path", use_container_width=True, key="lock_demand"):
-        generate_stochastic_demand(ACTIVE_PRODUCTS, ACTIVE_DEMAND_PARAMS)
-        st.success("Demand Locked!")
+    col1, col2, col3 = st.columns([1, 4, 1])
+    with col2:
+        if st.button("🔒 Lock 26-Week Demand", use_container_width=True, key="lock_demand"):
+            generate_stochastic_demand(ACTIVE_PRODUCTS, ACTIVE_DEMAND_PARAMS)
+            st.success("Locked!")
 
     if not st.session_state.demand_locked:
         np.random.seed(42) 
@@ -99,7 +128,7 @@ with st.sidebar:
     
     st.markdown("---")
     
-    st.header("Step 2: Architecture Tuning")
+    st.header("⚙️ Architecture Tuning")
     with st.form("control_panel"):
         active_scenario = st.radio("Active Simulation:", [
             "Legacy Strategy (100% Far-East)", 
@@ -108,44 +137,25 @@ with st.sidebar:
         ])
         
         st.subheader("Macro & Financial Levers")
-        tariff_rate = st.slider("Far-East Import Tariff (%)", 0.0, 30.0, 15.0) / 100.0
-        wacc_annual = st.slider("Cost of Capital (Annual WACC %)", 5.0, 25.0, 15.0) / 100.0
+        tariff_rate = st.slider("Far-East Import Tariff (%)", 0.0, 20.0, 8.0) / 100.0
+        wacc_annual = st.slider("Cost of Capital (Annual WACC %)", 5.0, 25.0, 12.0) / 100.0
         wacc_weekly = wacc_annual / 52.0
         
-        holding_cost = st.slider("UK 3PL Storage (£/unit/wk)", 0.1, 2.0, 0.4)
-        stockout_penalty = st.slider("Lost Sale Penalty (£/unit)", 20, 200, 80)
+        holding_cost = st.slider("UK 3PL Storage (£/unit/wk)", 0.05, 0.50, 0.15)
+        stockout_penalty = st.slider("Lost Sale Penalty (£/unit)", 20, 150, 80)
         
         corp_tax = 0.25 
         submitted = st.form_submit_button("🚀 Run 26-Week Optimizer")
 
-# --- 5. DATA PROCESSING ---
-try:
-    if uploaded_file is not None:
-        eco_df = pd.read_excel(uploaded_file, sheet_name="Supplier_Economics")
-        FINANCIALS = {}
-        for _, row in eco_df.iterrows():
-            FINANCIALS[row["Product"]] = {
-                "price": row["Retail_Price"], "unit_cbm": row["Unit_Volume_CBM"],
-                "fe_fob": row["FarEast_FOB"], "fe_lt": row["FarEast_LeadTime_Wks"],
-                "ns_fob": row["Nearshore_FOB"], "ns_lt": row["Nearshore_LeadTime_Wks"]
-            }
-    else:
-        FINANCIALS = DEFAULT_ECO
-except Exception as e:
-    st.error(f"❌ Excel Parsing Error. {str(e)}")
-    st.stop()
-
 DEMAND = st.session_state.demand_path
 
-# --- 6. THE MILP SOLVER (Total Landed Cost / Container Yield) ---
+# --- 5. THE MILP SOLVER (Total Landed Cost / Container Yield) ---
 def solve_sourcing(strategy_type):
     prob = pulp.LpProblem(f"Sourcing_{strategy_type.replace(' ', '')}", pulp.LpMaximize)
     
-    # Order quantities per product
     order_fe = pulp.LpVariable.dicts("Order_FE", (ACTIVE_PRODUCTS, WEEKS), lowBound=0, cat='Integer')
     order_ns = pulp.LpVariable.dicts("Order_NS", (ACTIVE_PRODUCTS, WEEKS), lowBound=0, cat='Integer')
     
-    # FIXED LOGISTICS: How many containers/trucks do we buy each week?
     containers_fe = pulp.LpVariable.dicts("Containers_FE", WEEKS, lowBound=0, cat='Integer')
     trucks_ns = pulp.LpVariable.dicts("Trucks_NS", WEEKS, lowBound=0, cat='Integer')
     
@@ -154,10 +164,11 @@ def solve_sourcing(strategy_type):
     shortage = pulp.LpVariable.dicts("Shortage", (ACTIVE_PRODUCTS, WEEKS), lowBound=0, cat='Integer')
 
     for p in ACTIVE_PRODUCTS:
-        prob += inv[p][0] == int(ACTIVE_DEMAND_PARAMS[p]["mean"] * (FINANCIALS[p]["fe_lt"] + 2))
+        # Starting inventory: exactly 11 weeks (Lead time + 1 week buffer)
+        prob += inv[p][0] == int(ACTIVE_DEMAND_PARAMS[p]["mean"] * (FINANCIALS[p]["fe_lt"] + 1))
 
         for w in WEEKS:
-            arr_fe = order_fe[p][w - int(FINANCIALS[p]["fe_lt"])] if w > FINANCIALS[p]["fe_lt"] else 0
+            arr_fe = order_fe[p][w - int(FINANCIALS[p]["fe_lt"])] if w > FINANCIALS[p]["fe_lt"] else int(ACTIVE_DEMAND_PARAMS[p]["mean"])
             arr_ns = order_ns[p][w - int(FINANCIALS[p]["ns_lt"])] if w > FINANCIALS[p]["ns_lt"] else 0
 
             if "Legacy" in strategy_type: prob += order_ns[p][w] == 0
@@ -167,25 +178,22 @@ def solve_sourcing(strategy_type):
             prob += sales[p][w] <= inv[p][w-1] + arr_fe + arr_ns
             prob += shortage[p][w] == DEMAND[p][w] - sales[p][w]
             
-            # Prevent Dead Inventory Ordering
             if w > 26 - FINANCIALS[p]["fe_lt"]: prob += order_fe[p][w] == 0
             if w > 26 - FINANCIALS[p]["ns_lt"]: prob += order_ns[p][w] == 0
 
     for w in WEEKS:
-        # VOLUMETRIC CONTAINER PACKING CONSTRAINTS
-        # The sum of CBMs for all products ordered must fit inside the integer number of containers purchased
         prob += pulp.lpSum([order_fe[p][w] * FINANCIALS[p]["unit_cbm"] for p in ACTIVE_PRODUCTS]) <= containers_fe[w] * FE_CONTAINER_CBM
         prob += pulp.lpSum([order_ns[p][w] * FINANCIALS[p]["unit_cbm"] for p in ACTIVE_PRODUCTS]) <= trucks_ns[w] * NS_TRUCK_CBM
 
     revenue = pulp.lpSum([sales[p][w] * FINANCIALS[p]["price"] for p in ACTIVE_PRODUCTS for w in WEEKS])
     
-    # COGS includes the base FOB price + The Far-East Tariffs!
+    # THE HORIZON FIX: Salvage Value for ending inventory (valued at 85% of FOB cost) to prevent intentional stockouts
+    salvage_value = pulp.lpSum([inv[p][26] * FINANCIALS[p]["fe_fob"] * 0.85 for p in ACTIVE_PRODUCTS])
+    
     cogs_fe = pulp.lpSum([order_fe[p][w] * (FINANCIALS[p]["fe_fob"] * (1 + tariff_rate)) for p in ACTIVE_PRODUCTS for w in WEEKS])
     cogs_ns = pulp.lpSum([order_ns[p][w] * FINANCIALS[p]["ns_fob"] for p in ACTIVE_PRODUCTS for w in WEEKS])
     
-    # Logistics is strictly fixed cost based on integer containers utilized
     logistics = pulp.lpSum([containers_fe[w] * FE_CONTAINER_COST + trucks_ns[w] * NS_TRUCK_COST for w in WEEKS])
-    
     holding = pulp.lpSum([inv[p][w] * holding_cost for p in ACTIVE_PRODUCTS for w in WEEKS])
     lost_sales_cost = pulp.lpSum([shortage[p][w] * stockout_penalty for p in ACTIVE_PRODUCTS for w in WEEKS])
     
@@ -193,10 +201,9 @@ def solve_sourcing(strategy_type):
     wacc_transit_ns = pulp.lpSum([order_ns[p][w] * FINANCIALS[p]["ns_fob"] * FINANCIALS[p]["ns_lt"] * wacc_weekly for p in ACTIVE_PRODUCTS for w in WEEKS])
     wacc_on_hand = pulp.lpSum([inv[p][w] * FINANCIALS[p]["fe_fob"] * wacc_weekly for p in ACTIVE_PRODUCTS for w in WEEKS])
     
-    prob += revenue - (cogs_fe + cogs_ns + logistics + holding + lost_sales_cost + wacc_transit_fe + wacc_transit_ns + wacc_on_hand)
+    prob += (revenue + salvage_value) - (cogs_fe + cogs_ns + logistics + holding + lost_sales_cost + wacc_transit_fe + wacc_transit_ns + wacc_on_hand)
     
-    # Extremely tight formulation, solves almost instantly
-    prob.solve(pulp.PULP_CBC_CMD(msg=0))
+    prob.solve(pulp.PULP_CBC_CMD(msg=0, gapRel=0.01)) # 1% Optimality gap for extreme speed
     
     return {
         "status": pulp.LpStatus[prob.status],
@@ -231,14 +238,13 @@ def extract_metrics(sales, order_fe, order_ns, containers_fe, trucks_ns, inv, sh
     total_wc = avg_inv_value + avg_transit_value
     roic = (nopat / total_wc) * 100 if total_wc > 0 else 0
     
-    # Calculate Container Fill Rate
     tot_fe_cbm = sum([get_val(order_fe[p][w]) * FINANCIALS[p]["unit_cbm"] for p in ACTIVE_PRODUCTS for w in WEEKS])
     tot_fe_cap = sum([get_val(containers_fe[w]) * FE_CONTAINER_CBM for w in WEEKS])
     fill_rate = (tot_fe_cbm / tot_fe_cap * 100) if tot_fe_cap > 0 else 0
     
     return {"t_rev": t_rev, "t_cogs": t_cogs, "t_freight": t_freight, "t_holding": t_holding, "t_lost": t_lost, "t_wacc": t_wacc, "ebitda": ebitda, "sl": sl, "wc": total_wc, "roic": roic, "fill_rate": fill_rate}
 
-# --- 7. EXECUTION ---
+# --- 6. EXECUTION ---
 if "Compare Both" in active_scenario:
     with st.spinner("Solving Legacy Strategy..."):
         res_A = solve_sourcing("Legacy Strategy")
@@ -249,8 +255,8 @@ else:
     with st.spinner(f"Simulating {active_scenario}..."):
         results = {active_scenario: solve_sourcing(active_scenario)}
 
-# --- 8. VISUAL DASHBOARDS ---
-tab1, tab2, tab3, tab4 = st.tabs(["📊 CFO Exec Summary", "💰 Total Landed P&L", "📦 S&OP Inventory Overlay", "🚢 Logistics & Container Yield"])
+# --- 7. VISUAL DASHBOARDS ---
+tab1, tab2, tab3, tab4 = st.tabs(["📊 CFO Exec Summary", "💰 Total Landed P&L", "📦 Inventory Curve", "🚢 Download CFO Audit Ledger"])
 
 with tab1:
     st.subheader("Working Capital & ROI Performance (26-Week Half)")
@@ -263,13 +269,9 @@ with tab1:
             st.metric("Working Capital Tied Up", f"£{m['wc']:,.0f}")
             st.metric("Annualized ROIC", f"{m['roic']*2:.1f}%")
             st.metric("Customer Service Level", f"{m['sl']:.1f}%")
-    
-    st.markdown("---")
-    st.info("💡 **Strategy& Value Creation Thesis:** Once you account for 15% Tariffs and Fixed £3,500 Ocean Containers, the 'cheap' Far-East FOB price is an illusion. The solver proves that utilizing Nearshore trucks eliminates stockouts, slashes WACC, and drives superior ROIC.")
 
 with tab2:
     st.subheader("Half-Year P&L & True Landed Costs")
-    
     pl_data = {"Line Item": ["Gross Sales Revenue", "FOB Materials Cost (+ Import Tariffs)", "Fixed Logistics (Ocean Cont. + Trucks)", "UK 3PL Holding Cost", "WACC Cost (Cash Opportunity Cost)", "TRUE EBITDA"]}
     for name, res in results.items():
         m = res["metrics"]
@@ -278,9 +280,11 @@ with tab2:
         pl_data[f"{name} Margin %"] = ["100.0%", pct(m['t_cogs']), pct(m['t_freight']), pct(m['t_holding']), pct(m['t_wacc']), pct(m['ebitda'])]
     
     st.table(pd.DataFrame(pl_data))
+    for name, res in results.items():
+        st.write(f"**{name}** -> Avoidable Value Leakage (Stockouts): £{res['metrics']['t_lost']:,.0f}")
 
 with tab3:
-    st.subheader("Operations: S&OP Inventory Curve Overlay")
+    st.subheader("Operations: S&OP Inventory Curve")
     view_prod = st.selectbox("Select Product to Graph:", ACTIVE_PRODUCTS)
     
     chart_data = []
@@ -301,26 +305,15 @@ with tab3:
     st.altair_chart(chart, use_container_width=True)
 
 with tab4:
-    st.subheader("Logistics & Container Packing Execution")
+    st.subheader("Download Detailed Financial & Operational Ledger")
+    st.info("Download the complete week-by-week audit trail. This Excel file contains the Executive KPIs, the container/truck packing schedule, and a dedicated tab for every single product showing POs, Arrivals, Sales, and WACC calculations.")
     
-    if len(results) > 1:
-        view_target = st.selectbox("Select Strategy to View Logistics:", list(results.keys()))
-    else:
-        view_target = list(results.keys())[0]
-        
-    res = results[view_target]
-    
-    st.metric("Far-East Ocean Container Yield (Fill Rate)", f"{res['metrics']['fill_rate']:.1f}%")
-    st.caption("The solver perfectly Tetris-packs combinations of Thermostats, Cameras, and Routers into exactly 68 CBM to maximize the £3,500 fixed cost.")
-    
-    po_data = []
-    for w in WEEKS:
-        c_fe = int(get_val(res["containers_fe"][w]))
-        t_ns = int(get_val(res["trucks_ns"][w]))
-        po_data.append({
-            "Week": w,
-            "40ft Containers Ordered (China)": c_fe if c_fe > 0 else "-",
-            "Lorry Trucks Ordered (Poland)": t_ns if t_ns > 0 else "-",
-            "Freight Cost Billed": f"£{(c_fe * FE_CONTAINER_COST) + (t_ns * NS_TRUCK_COST):,.0f}"
-        })
-    st.dataframe(pd.DataFrame(po_data).set_index("Week"), use_container_width=True)
+    excel_data = generate_cfo_ledger(results)
+    st.download_button(
+        label="📥 Download CFO Audit Ledger (.xlsx)", 
+        data=excel_data, 
+        file_name="CFO_Audit_Ledger.xlsx", 
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
+        key="dl_cfo_ledger",
+        type="primary"
+    )

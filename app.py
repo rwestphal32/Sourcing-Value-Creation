@@ -59,7 +59,6 @@ def generate_cfo_ledger(results_dict, lbo_metrics):
             prefix = "Legacy_" if "Legacy" in name else "Opt_"
             pd.DataFrame([{"Week": w, "China Containers": res["containers_fe"][w], "Poland Trucks": res["trucks_ns"][w], "Total Freight": res["cost_freight"][w]} for w in WEEKS]).to_excel(writer, sheet_name=f"{prefix}Logistics", index=False)
             for p in ACTIVE_PRODUCTS:
-                # Matches the graph output perfectly (Ending Inv)
                 prod_data = [{"Week": w, "Demand": DEMAND_ACTUAL[p][w], "Sales": res["sales"][p][w], "Lost Sales": res["shortage"][p][w], "Ending Inv": res["inv"][p][w], "China PO": res["order_fe"][p][w], "Poland PO": res["order_ns"][p][w]} for w in WEEKS]
                 pd.DataFrame(prod_data).to_excel(writer, sheet_name=f"{prefix}{p[:20]}".replace(" ", ""), index=False)
     return output.getvalue()
@@ -128,10 +127,15 @@ def run_milp_optimizer(strategy_type):
 
     for p in ACTIVE_PRODUCTS:
         cu = stockout_penalty
+        co_fe_start = (holding_cost + wacc_weekly * FINANCIALS[p]["fe_fob"]) * FINANCIALS[p]["fe_lt"]
+        z_fe_start = norm.ppf(cu / (cu + co_fe_start))
         
-        # FIX: Hardcode a sane, transparent starting point (2.5x Mean Demand). 
-        # Smart Thermostat = exactly 5000 units.
-        prob += inv[p][0] == int(ACTIVE_DEMAND_PARAMS[p]["mean"] * 2.5)
+        start_season_idx = 1 + seasonality_ui * math.sin(2 * math.pi * (1 - 32) / 52)
+        start_std = ACTIVE_DEMAND_PARAMS[p]["std"] * start_season_idx
+        ss_legacy = int(z_fe_start * start_std * math.sqrt(FINANCIALS[p]["fe_lt"]))
+        
+        # FIX 1: Start EXACTLY at the natural Legacy hovering point (Safety Stock + 0.5 weeks cycle stock)
+        prob += inv[p][0] == ss_legacy + int(ACTIVE_DEMAND_PARAMS[p]["mean"] * start_season_idx * 0.5)
 
         for w in WEEKS:
             season_idx = 1 + seasonality_ui * math.sin(2 * math.pi * (w - 32) / 52)
@@ -147,9 +151,9 @@ def run_milp_optimizer(strategy_type):
 
             prob += inv[p][w] >= ss_floor
             
-            # Historical pipeline matches mean demand so inventory stays stable instead of spiking
-            hist_season = 1 + seasonality_ui * math.sin(2 * math.pi * ((w - FINANCIALS[p]["fe_lt"]) - 32) / 52)
-            arr_fe = order_fe[p][w - FINANCIALS[p]["fe_lt"]] if w > FINANCIALS[p]["fe_lt"] else int(ACTIVE_DEMAND_PARAMS[p]["mean"] * hist_season)
+            # FIX 2: Historical pipeline matches THIS week's demand perfectly, preventing the Day-1 spike
+            expected_demand = int(ACTIVE_DEMAND_PARAMS[p]["mean"] * season_idx)
+            arr_fe = order_fe[p][w - FINANCIALS[p]["fe_lt"]] if w > FINANCIALS[p]["fe_lt"] else expected_demand
             arr_ns = order_ns[p][w - FINANCIALS[p]["ns_lt"]] if w > FINANCIALS[p]["ns_lt"] else 0
 
             if is_legacy: prob += order_ns[p][w] == 0
@@ -186,6 +190,7 @@ def run_milp_optimizer(strategy_type):
     return {
         "sales": {p: {w: int(get_val(sales[p][w])) for w in WEEKS} for p in ACTIVE_PRODUCTS},
         "inv": {p: {w: int(get_val(inv[p][w])) for w in WEEKS} for p in ACTIVE_PRODUCTS},
+        "inv_pre_sale": {p: {w: int(get_val(inv[p][w]) + get_val(sales[p][w])) for w in WEEKS} for p in ACTIVE_PRODUCTS},
         "inv_0": {p: int(get_val(inv[p][0])) for p in ACTIVE_PRODUCTS},
         "order_fe": {p: {w: int(get_val(order_fe[p][w])) for w in WEEKS} for p in ACTIVE_PRODUCTS},
         "order_ns": {p: {w: int(get_val(order_ns[p][w])) for w in WEEKS} for p in ACTIVE_PRODUCTS},
@@ -328,7 +333,6 @@ else:
         
         chart_data = [{"Week": w, "Metric": "Actual Seasonal Demand", "Units": int(DEMAND_ACTUAL[view_prod][w])} for w in WEEKS]
         for name, res in results.items():
-            # FIX: Plotted exactly as Ending Inventory to strictly match the downloadable spreadsheet
             chart_data.extend([{"Week": w, "Metric": f"Ending Inv ({name})", "Units": int(res["inv"][view_prod][w])} for w in WEEKS])
                 
         c_df = pd.DataFrame(chart_data)

@@ -6,3 +6,4 @@ altair
 xlsxwriter
 openpyxl
 scipy
+plotly

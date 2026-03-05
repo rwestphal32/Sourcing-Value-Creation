@@ -32,7 +32,7 @@ DEFAULT_ECO = {
 }
 
 FE_CONTAINER_CBM, FE_CONTAINER_COST = 68.0, 6500  
-FE_LCL_CBM_COST = 140.0 # Premium cost for LCL CBM from China
+FE_LCL_CBM_COST = 140.0 
 NS_TRUCK_CBM, NS_TRUCK_COST = 80.0, 2500      
 BIG_M = 1000000
 
@@ -60,7 +60,6 @@ def process_uploaded_file(df):
     custom_products = df["Product"].tolist()
     custom_demand = {}
     custom_eco = {}
-    
     for _, row in df.iterrows():
         p = row["Product"]
         custom_demand[p] = {"mean": row["Mean_Demand"], "std": row["Std_Dev"]}
@@ -71,11 +70,19 @@ def process_uploaded_file(df):
         }
     return custom_products, custom_demand, custom_eco
 
-# --- 3. DYNAMIC SEASONAL DEMAND GENERATOR ---
+# --- 3. SESSION STATE INITIALIZATION (BUG FIXED) ---
 if 'demand_locked' not in st.session_state:
     st.session_state.demand_locked = False
+if 'actual_demand' not in st.session_state:
     st.session_state.actual_demand = {}
+if 'last_uploaded_file' not in st.session_state:
     st.session_state.last_uploaded_file = None
+if 'custom_products' not in st.session_state:
+    st.session_state.custom_products = DEFAULT_PRODUCTS
+if 'custom_demand' not in st.session_state:
+    st.session_state.custom_demand = DEMAND_PARAMS
+if 'custom_eco' not in st.session_state:
+    st.session_state.custom_eco = DEFAULT_ECO
 
 def generate_stochastic_demand(products, params, y2_growth, seasonality):
     path = {}
@@ -107,7 +114,9 @@ with st.sidebar:
         FINANCIALS = st.session_state.custom_eco
         st.success(f"Loaded {len(ACTIVE_PRODUCTS)} SKUs.")
     else:
-        ACTIVE_PRODUCTS, ACTIVE_DEMAND_PARAMS, FINANCIALS = DEFAULT_PRODUCTS, DEMAND_PARAMS, DEFAULT_ECO
+        ACTIVE_PRODUCTS = st.session_state.custom_products
+        ACTIVE_DEMAND_PARAMS = st.session_state.custom_demand
+        FINANCIALS = st.session_state.custom_eco
 
     st.markdown("---")
     st.header("Step 2: Market Dynamics")
@@ -160,7 +169,6 @@ def run_milp_optimizer(strategy_type):
     order_fe_bin = pulp.LpVariable.dicts("FE_Bin", (ACTIVE_PRODUCTS, WEEKS), cat='Binary')
     order_ns_bin = pulp.LpVariable.dicts("NS_Bin", (ACTIVE_PRODUCTS, WEEKS), cat='Binary')
     
-    # NEW LOGIC: FCL (Integer) vs LCL (Continuous) for China
     containers_fe = pulp.LpVariable.dicts("Containers_FE", WEEKS, lowBound=0, cat='Integer')
     lcl_fe = pulp.LpVariable.dicts("LCL_FE", WEEKS, lowBound=0, cat='Continuous')
     trucks_ns = pulp.LpVariable.dicts("Trucks_NS", WEEKS, lowBound=0, cat='Continuous')
@@ -227,19 +235,14 @@ def run_milp_optimizer(strategy_type):
                 prob += order_ns[p][w] == 0
                 prob += order_ns_bin[p][w] == 0
 
-    # DYNAMIC FCL vs LCL EQUATION
     for w in WEEKS:
-        # Total CBM needed from China can be fulfilled by FCL containers OR LCL CBM fractions
         prob += pulp.lpSum([order_fe[p][w] * FINANCIALS[p]["unit_cbm"] for p in ACTIVE_PRODUCTS]) <= containers_fe[w] * FE_CONTAINER_CBM + lcl_fe[w]
         prob += pulp.lpSum([order_ns[p][w] * FINANCIALS[p]["unit_cbm"] for p in ACTIVE_PRODUCTS]) <= trucks_ns[w] * NS_TRUCK_CBM
 
     revenue = pulp.lpSum([sales[p][w] * FINANCIALS[p]["price"] for p in ACTIVE_PRODUCTS for w in WEEKS])
     purchases_fe = pulp.lpSum([order_fe[p][w] * (get_fob(p, w, 'fe') * (1+tariff_rate)) for p in ACTIVE_PRODUCTS for w in WEEKS])
     purchases_ns = pulp.lpSum([order_ns[p][w] * get_fob(p, w, 'ns') for p in ACTIVE_PRODUCTS for w in WEEKS])
-    
-    # Optimizer dynamically compares paying £6,500/FCL vs £140/LCL
     freight = pulp.lpSum([containers_fe[w] * FE_CONTAINER_COST + lcl_fe[w] * FE_LCL_CBM_COST + trucks_ns[w] * NS_TRUCK_COST for w in WEEKS])
-    
     holding = pulp.lpSum([inv[p][w] * holding_cost for p in ACTIVE_PRODUCTS for w in WEEKS])
     penalties = pulp.lpSum([shortage[p][w] * stockout_penalty for p in ACTIVE_PRODUCTS for w in WEEKS])
     ve_cost = 0 if is_legacy else ve_investment
@@ -341,7 +344,6 @@ def generate_excel_export(results_dict, lbo_metrics):
         pd.DataFrame([{"Strategy": n, **lbo["CF"]} for n, lbo in lbo_metrics.items()]).to_excel(writer, sheet_name="LBO_Returns", index=False)
         for name, res in results_dict.items():
             prefix = "Legacy_" if "Legacy" in name else "Opt_"
-            # Updated to show FCL vs LCL breakout
             pd.DataFrame([{"Week": w, "China FCL Containers": res["containers_fe"][w], "China LCL (CBM)": res["lcl_fe"][w], "Poland Trucks": res["trucks_ns"][w], "Total Freight": res["cost_freight"][w]} for w in WEEKS]).to_excel(writer, sheet_name=f"{prefix}Logistics", index=False)
             for p in ACTIVE_PRODUCTS:
                 prod_data = [{"Week": w, "Demand": DEMAND_ACTUAL[p][w], "Sales": res["sales"][p][w], "Lost Sales": res["shortage"][p][w], "Ending Inv": res["inv"][p][w], "China PO": res["order_fe"][p][w], "Poland PO": res["order_ns"][p][w]} for w in WEEKS]

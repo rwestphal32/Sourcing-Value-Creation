@@ -13,7 +13,7 @@ st.set_page_config(page_title="Strategy& Value Creation: 3-Statement LBO Twin", 
 st.title("🌍 PE Value Creation: The 100-Day Plan & 3-Statement Twin")
 st.markdown("**Context:** Evaluating a 2-Year PE Hold. Simulating Network Optimization, Value Engineering, and Terms Optimization to generate a GAAP-compliant 3-Statement CFO rollout.")
 
-# --- 1. FALLBACK DEMO DATA ---
+# --- 1. FALLBACK DEMO DATA (Adjusted to Wholesale Net Revenue Pricing) ---
 WEEKS = list(range(1, 105)) 
 
 DEFAULT_PRODUCTS = ["Smart Thermostat", "HD Security Camera", "Wi-Fi Mesh Router", "Smart Plug (4-Pack)"]
@@ -25,11 +25,12 @@ DEMAND_PARAMS = {
     "Smart Plug (4-Pack)": {"mean": 5000, "std": 600}
 }
 
+# Prices reduced to reflect standard 40-50% retail channel margins (Wholesale Price)
 DEFAULT_ECO = {
-    "Smart Thermostat": {"price": 120.0, "unit_cbm": 0.005, "fe_fob": 32.0, "fe_lt": 10, "fe_moq": 3000, "ns_fob": 37.0, "ns_lt": 2, "ns_moq": 500},
-    "HD Security Camera": {"price": 85.0, "unit_cbm": 0.003, "fe_fob": 18.0, "fe_lt": 10, "fe_moq": 4000, "ns_fob": 24.0, "ns_lt": 2, "ns_moq": 1000},
-    "Wi-Fi Mesh Router": {"price": 150.0, "unit_cbm": 0.015, "fe_fob": 38.0, "fe_lt": 10, "fe_moq": 2000, "ns_fob": 50.0, "ns_lt": 2, "ns_moq": 500},
-    "Smart Plug (4-Pack)": {"price": 30.0, "unit_cbm": 0.002, "fe_fob": 6.5, "fe_lt": 10, "fe_moq": 8000, "ns_fob": 8.0, "ns_lt": 2, "ns_moq": 2000}
+    "Smart Thermostat": {"price": 65.0, "unit_cbm": 0.005, "fe_fob": 32.0, "fe_lt": 10, "fe_moq": 3000, "ns_fob": 36.0, "ns_lt": 2, "ns_moq": 500},
+    "HD Security Camera": {"price": 45.0, "unit_cbm": 0.003, "fe_fob": 18.0, "fe_lt": 10, "fe_moq": 4000, "ns_fob": 23.0, "ns_lt": 2, "ns_moq": 1000},
+    "Wi-Fi Mesh Router": {"price": 80.0, "unit_cbm": 0.015, "fe_fob": 38.0, "fe_lt": 10, "fe_moq": 2000, "ns_fob": 44.0, "ns_lt": 2, "ns_moq": 500},
+    "Smart Plug (4-Pack)": {"price": 16.0, "unit_cbm": 0.002, "fe_fob": 6.5, "fe_lt": 10, "fe_moq": 8000, "ns_fob": 8.0, "ns_lt": 2, "ns_moq": 2000}
 }
 
 FE_CONTAINER_CBM, FE_CONTAINER_COST = 68.0, 6500  
@@ -43,7 +44,7 @@ def generate_upload_template():
         "Product": ["Smart Thermostat", "HD Security Camera", "Wi-Fi Mesh Router", "Smart Plug (4-Pack)"],
         "Mean_Demand": [2000, 3500, 1200, 5000],
         "Std_Dev": [300, 450, 200, 600],
-        "Sale_Price": [120.0, 85.0, 150.0, 30.0],
+        "Wholesale_Sale_Price": [65.0, 45.0, 80.0, 16.0],
         "Unit_CBM": [0.005, 0.003, 0.015, 0.002],
         "China_FOB": [32.0, 18.0, 38.0, 6.5],
         "China_LT_Weeks": [10, 10, 10, 10],
@@ -65,7 +66,7 @@ def process_uploaded_file(df):
         p = row["Product"]
         custom_demand[p] = {"mean": row["Mean_Demand"], "std": row["Std_Dev"]}
         custom_eco[p] = {
-            "price": row["Sale_Price"], "unit_cbm": row["Unit_CBM"],
+            "price": row["Wholesale_Sale_Price"], "unit_cbm": row["Unit_CBM"],
             "fe_fob": row["China_FOB"], "fe_lt": row["China_LT_Weeks"], "fe_moq": row["China_MOQ"],
             "ns_fob": row["Poland_FOB"], "ns_lt": row["Poland_LT_Weeks"], "ns_moq": row["Poland_MOQ"]
         }
@@ -147,11 +148,12 @@ with st.sidebar:
         debt_ratio = st.slider("Debt Funding Ratio (%)", 0.0, 80.0, 65.0) / 100.0
         interest_rate = st.slider("Debt Interest Rate (%)", 5.0, 15.0, 9.0) / 100.0
         
-        st.subheader("P&L Constraints")
-        sga_margin = st.slider("SG&A Overhead (% of Rev)", 10.0, 40.0, 22.0) / 100.0
-        tariff_rate = st.slider("China Import Tariff (%)", 0.0, 20.0, 8.0) / 100.0
+        st.subheader("P&L Operating Expenses")
+        sga_margin = st.slider("SG&A (HQ/Payroll) %", 5.0, 30.0, 15.0) / 100.0
+        marketing_margin = st.slider("Marketing & Outbound Freight %", 5.0, 30.0, 15.0) / 100.0
         
         st.subheader("Operational Constraints")
+        tariff_rate = st.slider("China Import Tariff (%)", 0.0, 20.0, 8.0) / 100.0
         wacc_weekly = (st.slider("Cost of Capital (WACC %)", 5.0, 25.0, 15.0) / 100.0) / 52.0
         holding_cost = st.slider("UK 3PL Storage (£/unit/wk)", 0.05, 0.50, 0.35)
         stockout_penalty = st.slider("Lost Sale Penalty (£/unit)", 20, 150, 80)
@@ -249,7 +251,11 @@ def run_milp_optimizer(strategy_type):
     ve_cost = 0 if is_legacy else ve_investment
     salvage_value = pulp.lpSum([inv[p][104] * get_fob(p, 104, 'fe') * 0.90 for p in ACTIVE_PRODUCTS])
     
-    prob += (revenue + salvage_value) - (purchases_fe + purchases_ns + freight + holding + penalties + ve_cost)
+    # Updated OPEX objective
+    sga = revenue * sga_margin
+    marketing = revenue * marketing_margin
+    
+    prob += (revenue + salvage_value) - (purchases_fe + purchases_ns + freight + holding + penalties + ve_cost + sga + marketing)
     
     try:
         prob.solve(pulp.PULP_CBC_CMD(msg=0, timeLimit=30, gapRel=0.05))
@@ -280,16 +286,17 @@ def generate_three_statements(res, is_baseline, entry_ebitda=None):
         rev = sum([res["sales"][p][w] * FINANCIALS[p]["price"] for p in ACTIVE_PRODUCTS for w in range(s_w, e_w)])
         cogs = sum([res["sales"][p][w] * (get_fob(p, w, 'fe') * (1+tariff_rate)) for p in ACTIVE_PRODUCTS for w in range(s_w, e_w)])
         sga = rev * sga_margin
+        mkt = rev * marketing_margin
         freight = sum([res["cost_freight"][w] for w in range(s_w, e_w)])
         holding = sum([res["inv"][p][w] * holding_cost for p in ACTIVE_PRODUCTS for w in range(s_w, e_w)])
         short = sum([res["shortage"][p][w] * stockout_penalty for p in ACTIVE_PRODUCTS for w in range(s_w, e_w)])
         ve_opex = ve_investment if not is_baseline and is_year_1 else 0
-        ebitda = rev - (cogs + sga + freight + holding + short + ve_opex)
+        ebitda = rev - (cogs + sga + mkt + freight + holding + short + ve_opex)
         purchases = sum([res["order_fe"][p][w] * (get_fob(p, w, 'fe') * (1+tariff_rate)) + res["order_ns"][p][w] * get_fob(p, w, 'ns') for p in ACTIVE_PRODUCTS for w in range(s_w, e_w)])
-        return rev, cogs, sga, purchases, freight + holding + short + ve_opex, ebitda
+        return rev, cogs, sga, mkt, purchases, freight + holding + short + ve_opex, ebitda
 
-    y1_rev, y1_cogs, y1_sga, y1_purchases, y1_opex, y1_ebitda = generate_is(1, 53, True)
-    y2_rev, y2_cogs, y2_sga, y2_purchases, y2_opex, y2_ebitda = generate_is(53, 105, False)
+    y1_rev, y1_cogs, y1_sga, y1_mkt, y1_purchases, y1_opex, y1_ebitda = generate_is(1, 53, True)
+    y2_rev, y2_cogs, y2_sga, y2_mkt, y2_purchases, y2_opex, y2_ebitda = generate_is(53, 105, False)
 
     dpo = 30 if is_baseline else dpo_days
     dso = 30 if is_baseline else dso_days
@@ -332,8 +339,8 @@ def generate_three_statements(res, is_baseline, entry_ebitda=None):
     exit_equity = (exit_ev + salvage + cash_base) - debt_2
 
     return {
-        "IS": {"Y1 Rev": y1_rev, "Y1 COGS": -y1_cogs, "Y1 SGA": -y1_sga, "Y1 OPEX": -y1_opex, "Y1 EBITDA": y1_ebitda, 
-               "Y2 Rev": y2_rev, "Y2 COGS": -y2_cogs, "Y2 SGA": -y2_sga, "Y2 OPEX": -y2_opex, "Y2 EBITDA": y2_ebitda},
+        "IS": {"Y1 Rev": y1_rev, "Y1 COGS": -y1_cogs, "Y1 SGA": -y1_sga, "Y1 MKT": -y1_mkt, "Y1 OPEX": -y1_opex, "Y1 EBITDA": y1_ebitda, 
+               "Y2 Rev": y2_rev, "Y2 COGS": -y2_cogs, "Y2 SGA": -y2_sga, "Y2 MKT": -y2_mkt, "Y2 OPEX": -y2_opex, "Y2 EBITDA": y2_ebitda},
         "BS": {"Cash": cash_base, "PPE": ppe_base, "Inv 0": inv_val_0, "AR 0": ar_0, "AP 0": ap_0, "Debt 0": starting_debt, "Equity 0": entry_equity, 
                "Inv 2": inv_val_2, "AR 2": ar_2, "AP 2": ap_2, "Debt 2": debt_2, "Equity 2": exit_equity},
         "CF": {"Y1 FCF": y1_fcf, "Y2 FCF": y2_fcf, "MOIC": exit_equity / entry_equity if entry_equity > 0 else 0, "Exit EV": exit_ev}
@@ -378,17 +385,16 @@ else:
     tab1, tab2, tab3, tab4, tab5 = st.tabs(["🚀 Executive Summary", "📊 3-Statement LBO", "📦 Ending Inventory", "📈 Strategy Comparison", "📥 Export"])
 
     with tab1:
-        st.subheader("100-Day Plan Scorecard: LBO Returns")
+        st.subheader("100-Day Plan Scorecard: Exit Equity Reconciliation")
         st.markdown("This details the absolute return profile for the Equity Investors under the highly optimized Strategy& 100-Day Plan.")
 
         opt_lbo = lbo_results['Strategy& 100-Day Plan']
-        leg_lbo = lbo_results['Legacy (Baseline)'] # Used strictly for the entry valuation basis
+        leg_lbo = lbo_results['Legacy (Baseline)'] 
         
         entry_eq = opt_lbo['BS']['Equity 0']
         exit_eq = opt_lbo['BS']['Equity 2']
         
-        # Absolute Bridge Components
-        entry_ebitda = leg_lbo['IS']['Y1 EBITDA'] # Entry valuation basis
+        entry_ebitda = leg_lbo['IS']['Y1 EBITDA'] 
         exit_ebitda = opt_lbo['IS']['Y2 EBITDA']
         ebitda_expansion = (exit_ebitda - entry_ebitda) * entry_multiple
         
@@ -435,11 +441,11 @@ else:
         
         st.markdown("### 1. Income Statement (Hold Period)")
         is_data = {
-            "Line Item": ["Revenue", "COGS", "SG&A Overhead", "OPEX (Holding/Freight/VE Invest)", "EBITDA"],
-            "Legacy Y1": [f"£{lbo_results['Legacy (Baseline)']['IS']['Y1 Rev']:,.0f}", f"£{lbo_results['Legacy (Baseline)']['IS']['Y1 COGS']:,.0f}", f"£{lbo_results['Legacy (Baseline)']['IS']['Y1 SGA']:,.0f}", f"£{lbo_results['Legacy (Baseline)']['IS']['Y1 OPEX']:,.0f}", f"£{lbo_results['Legacy (Baseline)']['IS']['Y1 EBITDA']:,.0f}"],
-            "Legacy Y2": [f"£{lbo_results['Legacy (Baseline)']['IS']['Y2 Rev']:,.0f}", f"£{lbo_results['Legacy (Baseline)']['IS']['Y2 COGS']:,.0f}", f"£{lbo_results['Legacy (Baseline)']['IS']['Y2 SGA']:,.0f}", f"£{lbo_results['Legacy (Baseline)']['IS']['Y2 OPEX']:,.0f}", f"£{lbo_results['Legacy (Baseline)']['IS']['Y2 EBITDA']:,.0f}"],
-            "Opt 100-Day Y1": [f"£{lbo_results['Strategy& 100-Day Plan']['IS']['Y1 Rev']:,.0f}", f"£{lbo_results['Strategy& 100-Day Plan']['IS']['Y1 COGS']:,.0f}", f"£{lbo_results['Strategy& 100-Day Plan']['IS']['Y1 SGA']:,.0f}", f"£{lbo_results['Strategy& 100-Day Plan']['IS']['Y1 OPEX']:,.0f}", f"£{lbo_results['Strategy& 100-Day Plan']['IS']['Y1 EBITDA']:,.0f}"],
-            "Opt 100-Day Y2": [f"£{lbo_results['Strategy& 100-Day Plan']['IS']['Y2 Rev']:,.0f}", f"£{lbo_results['Strategy& 100-Day Plan']['IS']['Y2 COGS']:,.0f}", f"£{lbo_results['Strategy& 100-Day Plan']['IS']['Y2 SGA']:,.0f}", f"£{lbo_results['Strategy& 100-Day Plan']['IS']['Y2 OPEX']:,.0f}", f"£{lbo_results['Strategy& 100-Day Plan']['IS']['Y2 EBITDA']:,.0f}"]
+            "Line Item": ["Revenue", "COGS", "Marketing & Outbound", "SG&A Overhead", "OPEX (Holding/Freight/VE Invest)", "EBITDA"],
+            "Legacy Y1": [f"£{lbo_results['Legacy (Baseline)']['IS']['Y1 Rev']:,.0f}", f"£{lbo_results['Legacy (Baseline)']['IS']['Y1 COGS']:,.0f}", f"£{lbo_results['Legacy (Baseline)']['IS']['Y1 MKT']:,.0f}", f"£{lbo_results['Legacy (Baseline)']['IS']['Y1 SGA']:,.0f}", f"£{lbo_results['Legacy (Baseline)']['IS']['Y1 OPEX']:,.0f}", f"£{lbo_results['Legacy (Baseline)']['IS']['Y1 EBITDA']:,.0f}"],
+            "Legacy Y2": [f"£{lbo_results['Legacy (Baseline)']['IS']['Y2 Rev']:,.0f}", f"£{lbo_results['Legacy (Baseline)']['IS']['Y2 COGS']:,.0f}", f"£{lbo_results['Legacy (Baseline)']['IS']['Y2 MKT']:,.0f}", f"£{lbo_results['Legacy (Baseline)']['IS']['Y2 SGA']:,.0f}", f"£{lbo_results['Legacy (Baseline)']['IS']['Y2 OPEX']:,.0f}", f"£{lbo_results['Legacy (Baseline)']['IS']['Y2 EBITDA']:,.0f}"],
+            "Opt 100-Day Y1": [f"£{lbo_results['Strategy& 100-Day Plan']['IS']['Y1 Rev']:,.0f}", f"£{lbo_results['Strategy& 100-Day Plan']['IS']['Y1 COGS']:,.0f}", f"£{lbo_results['Strategy& 100-Day Plan']['IS']['Y1 MKT']:,.0f}", f"£{lbo_results['Strategy& 100-Day Plan']['IS']['Y1 SGA']:,.0f}", f"£{lbo_results['Strategy& 100-Day Plan']['IS']['Y1 OPEX']:,.0f}", f"£{lbo_results['Strategy& 100-Day Plan']['IS']['Y1 EBITDA']:,.0f}"],
+            "Opt 100-Day Y2": [f"£{lbo_results['Strategy& 100-Day Plan']['IS']['Y2 Rev']:,.0f}", f"£{lbo_results['Strategy& 100-Day Plan']['IS']['Y2 COGS']:,.0f}", f"£{lbo_results['Strategy& 100-Day Plan']['IS']['Y2 MKT']:,.0f}", f"£{lbo_results['Strategy& 100-Day Plan']['IS']['Y2 SGA']:,.0f}", f"£{lbo_results['Strategy& 100-Day Plan']['IS']['Y2 OPEX']:,.0f}", f"£{lbo_results['Strategy& 100-Day Plan']['IS']['Y2 EBITDA']:,.0f}"]
         }
         st.table(pd.DataFrame(is_data).set_index("Line Item"))
 

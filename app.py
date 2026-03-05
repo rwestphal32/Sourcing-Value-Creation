@@ -12,7 +12,7 @@ st.set_page_config(page_title="Strategy& Value Creation: 3-Statement LBO Twin", 
 st.title("🌍 PE Value Creation: The 100-Day Plan & 3-Statement Twin")
 st.markdown("**Context:** Evaluating a 2-Year PE Hold. Simulating Network Optimization, Value Engineering, and Terms Optimization to generate a GAAP-compliant 3-Statement CFO rollout.")
 
-# --- 1. FALLBACK DEMO DATA (Adjusted Poland FOB to trigger Dual-Sourcing) ---
+# --- 1. FALLBACK DEMO DATA ---
 WEEKS = list(range(1, 105)) 
 
 DEFAULT_PRODUCTS = ["Smart Thermostat", "HD Security Camera", "Wi-Fi Mesh Router", "Smart Plug (4-Pack)"]
@@ -26,18 +26,18 @@ DEMAND_PARAMS = {
 
 DEFAULT_ECO = {
     "Smart Thermostat": {"price": 120.0, "unit_cbm": 0.005, "fe_fob": 32.0, "fe_lt": 10, "fe_moq": 3000, "ns_fob": 37.0, "ns_lt": 2, "ns_moq": 500},
-    "HD Security Camera": {"price": 85.0, "unit_cbm": 0.003, "fe_fob": 18.0, "fe_lt": 10, "fe_moq": 4000, "ns_fob": 23.0, "ns_lt": 2, "ns_moq": 1000},
-    "Wi-Fi Mesh Router": {"price": 150.0, "unit_cbm": 0.015, "fe_fob": 38.0, "fe_lt": 10, "fe_moq": 2000, "ns_fob": 45.0, "ns_lt": 2, "ns_moq": 500},
+    "HD Security Camera": {"price": 85.0, "unit_cbm": 0.003, "fe_fob": 18.0, "fe_lt": 10, "fe_moq": 4000, "ns_fob": 24.0, "ns_lt": 2, "ns_moq": 1000},
+    "Wi-Fi Mesh Router": {"price": 150.0, "unit_cbm": 0.015, "fe_fob": 38.0, "fe_lt": 10, "fe_moq": 2000, "ns_fob": 50.0, "ns_lt": 2, "ns_moq": 500},
     "Smart Plug (4-Pack)": {"price": 30.0, "unit_cbm": 0.002, "fe_fob": 6.5, "fe_lt": 10, "fe_moq": 8000, "ns_fob": 8.0, "ns_lt": 2, "ns_moq": 2000}
 }
 
 FE_CONTAINER_CBM, FE_CONTAINER_COST = 68.0, 6500  
+FE_LCL_CBM_COST = 140.0 # Premium cost for LCL CBM from China
 NS_TRUCK_CBM, NS_TRUCK_COST = 80.0, 2500      
 BIG_M = 1000000
 
 # --- 2. FILE UPLOAD & TEMPLATE ENGINE ---
 def generate_upload_template():
-    # FIX: Added all 4 products to the downloadable template
     data = {
         "Product": ["Smart Thermostat", "HD Security Camera", "Wi-Fi Mesh Router", "Smart Plug (4-Pack)"],
         "Mean_Demand": [2000, 3500, 1200, 5000],
@@ -160,7 +160,9 @@ def run_milp_optimizer(strategy_type):
     order_fe_bin = pulp.LpVariable.dicts("FE_Bin", (ACTIVE_PRODUCTS, WEEKS), cat='Binary')
     order_ns_bin = pulp.LpVariable.dicts("NS_Bin", (ACTIVE_PRODUCTS, WEEKS), cat='Binary')
     
+    # NEW LOGIC: FCL (Integer) vs LCL (Continuous) for China
     containers_fe = pulp.LpVariable.dicts("Containers_FE", WEEKS, lowBound=0, cat='Integer')
+    lcl_fe = pulp.LpVariable.dicts("LCL_FE", WEEKS, lowBound=0, cat='Continuous')
     trucks_ns = pulp.LpVariable.dicts("Trucks_NS", WEEKS, lowBound=0, cat='Continuous')
     
     inv = pulp.LpVariable.dicts("Inv", (ACTIVE_PRODUCTS, [0] + WEEKS), lowBound=0, cat='Integer')
@@ -225,14 +227,19 @@ def run_milp_optimizer(strategy_type):
                 prob += order_ns[p][w] == 0
                 prob += order_ns_bin[p][w] == 0
 
+    # DYNAMIC FCL vs LCL EQUATION
     for w in WEEKS:
-        prob += pulp.lpSum([order_fe[p][w] * FINANCIALS[p]["unit_cbm"] for p in ACTIVE_PRODUCTS]) <= containers_fe[w] * FE_CONTAINER_CBM
+        # Total CBM needed from China can be fulfilled by FCL containers OR LCL CBM fractions
+        prob += pulp.lpSum([order_fe[p][w] * FINANCIALS[p]["unit_cbm"] for p in ACTIVE_PRODUCTS]) <= containers_fe[w] * FE_CONTAINER_CBM + lcl_fe[w]
         prob += pulp.lpSum([order_ns[p][w] * FINANCIALS[p]["unit_cbm"] for p in ACTIVE_PRODUCTS]) <= trucks_ns[w] * NS_TRUCK_CBM
 
     revenue = pulp.lpSum([sales[p][w] * FINANCIALS[p]["price"] for p in ACTIVE_PRODUCTS for w in WEEKS])
     purchases_fe = pulp.lpSum([order_fe[p][w] * (get_fob(p, w, 'fe') * (1+tariff_rate)) for p in ACTIVE_PRODUCTS for w in WEEKS])
     purchases_ns = pulp.lpSum([order_ns[p][w] * get_fob(p, w, 'ns') for p in ACTIVE_PRODUCTS for w in WEEKS])
-    freight = pulp.lpSum([containers_fe[w] * FE_CONTAINER_COST + trucks_ns[w] * NS_TRUCK_COST for w in WEEKS])
+    
+    # Optimizer dynamically compares paying £6,500/FCL vs £140/LCL
+    freight = pulp.lpSum([containers_fe[w] * FE_CONTAINER_COST + lcl_fe[w] * FE_LCL_CBM_COST + trucks_ns[w] * NS_TRUCK_COST for w in WEEKS])
+    
     holding = pulp.lpSum([inv[p][w] * holding_cost for p in ACTIVE_PRODUCTS for w in WEEKS])
     penalties = pulp.lpSum([shortage[p][w] * stockout_penalty for p in ACTIVE_PRODUCTS for w in WEEKS])
     ve_cost = 0 if is_legacy else ve_investment
@@ -252,9 +259,10 @@ def run_milp_optimizer(strategy_type):
         "inv_0": {p: int(get_val(inv[p][0])) for p in ACTIVE_PRODUCTS},
         "order_fe": {p: {w: int(get_val(order_fe[p][w])) for w in WEEKS} for p in ACTIVE_PRODUCTS},
         "order_ns": {p: {w: int(get_val(order_ns[p][w])) for w in WEEKS} for p in ACTIVE_PRODUCTS},
-        "cost_freight": {w: (get_val(containers_fe[w]) * FE_CONTAINER_COST) + (get_val(trucks_ns[w]) * NS_TRUCK_COST) for w in WEEKS},
+        "cost_freight": {w: (get_val(containers_fe[w]) * FE_CONTAINER_COST) + (get_val(lcl_fe[w]) * FE_LCL_CBM_COST) + (get_val(trucks_ns[w]) * NS_TRUCK_COST) for w in WEEKS},
         "shortage": {p: {w: int(get_val(shortage[p][w])) for w in WEEKS} for p in ACTIVE_PRODUCTS},
         "containers_fe": {w: get_val(containers_fe[w]) for w in WEEKS},
+        "lcl_fe": {w: get_val(lcl_fe[w]) for w in WEEKS},
         "trucks_ns": {w: get_val(trucks_ns[w]) for w in WEEKS}
     }
 
@@ -333,7 +341,8 @@ def generate_excel_export(results_dict, lbo_metrics):
         pd.DataFrame([{"Strategy": n, **lbo["CF"]} for n, lbo in lbo_metrics.items()]).to_excel(writer, sheet_name="LBO_Returns", index=False)
         for name, res in results_dict.items():
             prefix = "Legacy_" if "Legacy" in name else "Opt_"
-            pd.DataFrame([{"Week": w, "China Containers": res["containers_fe"][w], "Poland Trucks": res["trucks_ns"][w], "Total Freight": res["cost_freight"][w]} for w in WEEKS]).to_excel(writer, sheet_name=f"{prefix}Logistics", index=False)
+            # Updated to show FCL vs LCL breakout
+            pd.DataFrame([{"Week": w, "China FCL Containers": res["containers_fe"][w], "China LCL (CBM)": res["lcl_fe"][w], "Poland Trucks": res["trucks_ns"][w], "Total Freight": res["cost_freight"][w]} for w in WEEKS]).to_excel(writer, sheet_name=f"{prefix}Logistics", index=False)
             for p in ACTIVE_PRODUCTS:
                 prod_data = [{"Week": w, "Demand": DEMAND_ACTUAL[p][w], "Sales": res["sales"][p][w], "Lost Sales": res["shortage"][p][w], "Ending Inv": res["inv"][p][w], "China PO": res["order_fe"][p][w], "Poland PO": res["order_ns"][p][w]} for w in WEEKS]
                 pd.DataFrame(prod_data).to_excel(writer, sheet_name=f"{prefix}{p[:20]}".replace(" ", ""), index=False)

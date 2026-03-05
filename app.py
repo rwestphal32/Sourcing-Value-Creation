@@ -26,9 +26,9 @@ DEMAND_PARAMS = {
 }
 
 DEFAULT_ECO = {
-    "Smart Thermostat": {"price": 120.0, "unit_cbm": 0.005, "fe_fob": 32.0, "fe_lt": 10, "fe_moq": 3000, "ns_fob": 36.0, "ns_lt": 2, "ns_moq": 500},
-    "HD Security Camera": {"price": 85.0, "unit_cbm": 0.003, "fe_fob": 18.0, "fe_lt": 10, "fe_moq": 4000, "ns_fob": 23.0, "ns_lt": 2, "ns_moq": 1000},
-    "Wi-Fi Mesh Router": {"price": 150.0, "unit_cbm": 0.015, "fe_fob": 38.0, "fe_lt": 10, "fe_moq": 2000, "ns_fob": 44.0, "ns_lt": 2, "ns_moq": 500},
+    "Smart Thermostat": {"price": 120.0, "unit_cbm": 0.005, "fe_fob": 32.0, "fe_lt": 10, "fe_moq": 3000, "ns_fob": 37.0, "ns_lt": 2, "ns_moq": 500},
+    "HD Security Camera": {"price": 85.0, "unit_cbm": 0.003, "fe_fob": 18.0, "fe_lt": 10, "fe_moq": 4000, "ns_fob": 24.0, "ns_lt": 2, "ns_moq": 1000},
+    "Wi-Fi Mesh Router": {"price": 150.0, "unit_cbm": 0.015, "fe_fob": 38.0, "fe_lt": 10, "fe_moq": 2000, "ns_fob": 50.0, "ns_lt": 2, "ns_moq": 500},
     "Smart Plug (4-Pack)": {"price": 30.0, "unit_cbm": 0.002, "fe_fob": 6.5, "fe_lt": 10, "fe_moq": 8000, "ns_fob": 8.0, "ns_lt": 2, "ns_moq": 2000}
 }
 
@@ -375,59 +375,64 @@ else:
     results = st.session_state.results
     lbo_results = st.session_state.lbo_results
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🚀 Executive Summary", "📊 3-Statement LBO", "📦 Ending Inventory", "📈 Value Bridge", "📥 Export"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🚀 Executive Summary", "📊 3-Statement LBO", "📦 Ending Inventory", "📈 Strategy Comparison", "📥 Export"])
 
     with tab1:
-        st.subheader("100-Day Plan Scorecard: Exit Equity Reconciliation")
-        st.markdown("This explicitly reconciles every pound of value created from the Baseline strategy to the Optimized strategy.")
+        st.subheader("100-Day Plan Scorecard: LBO Returns")
+        st.markdown("This details the absolute return profile for the Equity Investors under the highly optimized Strategy& 100-Day Plan.")
 
-        leg_eq = lbo_results['Legacy (Baseline)']['BS']['Equity 2']
-        opt_eq = lbo_results['Strategy& 100-Day Plan']['BS']['Equity 2']
+        opt_lbo = lbo_results['Strategy& 100-Day Plan']
+        leg_lbo = lbo_results['Legacy (Baseline)'] # Used strictly for the entry valuation basis
         
-        # 1. Exit EV Expansion
-        delta_ev = lbo_results['Strategy& 100-Day Plan']['CF']['Exit EV'] - lbo_results['Legacy (Baseline)']['CF']['Exit EV']
+        entry_eq = opt_lbo['BS']['Equity 0']
+        exit_eq = opt_lbo['BS']['Equity 2']
         
-        # 2. Inventory Cash Flow Delta
-        leg_inv_cf = -(lbo_results['Legacy (Baseline)']['BS']['Inv 2'] - lbo_results['Legacy (Baseline)']['BS']['Inv 0'])
-        opt_inv_cf = -(lbo_results['Strategy& 100-Day Plan']['BS']['Inv 2'] - lbo_results['Strategy& 100-Day Plan']['BS']['Inv 0'])
-        delta_inv_cf = opt_inv_cf - leg_inv_cf
+        # Absolute Bridge Components
+        entry_ebitda = leg_lbo['IS']['Y1 EBITDA'] # Entry valuation basis
+        exit_ebitda = opt_lbo['IS']['Y2 EBITDA']
+        ebitda_expansion = (exit_ebitda - entry_ebitda) * entry_multiple
         
-        # 3. AP Cash Flow Delta
-        leg_ap_cf = abs(lbo_results['Legacy (Baseline)']['BS']['AP 2']) - abs(lbo_results['Legacy (Baseline)']['BS']['AP 0'])
-        opt_ap_cf = abs(lbo_results['Strategy& 100-Day Plan']['BS']['AP 2']) - abs(lbo_results['Strategy& 100-Day Plan']['BS']['AP 0'])
-        delta_ap_cf = opt_ap_cf - leg_ap_cf
-        
-        # 4. Value Engineering OPEX
-        ve_cost = -ve_investment
-        
-        # 5. Operational Balance (Freight, Tax, Interest, AR, Salvage)
-        total_delta = opt_eq - leg_eq
-        other_cf = total_delta - (delta_ev + delta_inv_cf + delta_ap_cf + ve_cost)
+        total_fcf = opt_lbo['CF']['Y1 FCF'] + opt_lbo['CF']['Y2 FCF']
+        terminal_assets = opt_lbo['BS']['Cash'] + (opt_lbo['BS']['Inv 2'] * 0.9)
 
         fig = go.Figure(go.Waterfall(
             name="Value Bridge",
             orientation="v",
-            measure=["absolute", "relative", "relative", "relative", "relative", "relative", "absolute"],
-            x=["Legacy Exit Equity", "Exit EV Expansion", "Inventory Cash Release", "Accounts Payable Relief", "VE Investment (OPEX)", "Freight, Tax & Salvage Delta", "Optimized Exit Equity"],
+            measure=["absolute", "relative", "relative", "relative", "total"],
+            x=["Initial Equity Check", "EBITDA Expansion (x Multiple)", "Free Cash Flow (Debt Paydown)", "Terminal Cash & Salvage", "Final Exit Equity"],
             textposition="outside",
-            text=[f"£{leg_eq:,.0f}", f"+£{delta_ev:,.0f}", f"+£{delta_inv_cf:,.0f}", f"+£{delta_ap_cf:,.0f}", f"£{ve_cost:,.0f}", f"£{other_cf:,.0f}", f"£{opt_eq:,.0f}"],
-            y=[leg_eq, delta_ev, delta_inv_cf, delta_ap_cf, ve_cost, other_cf, opt_eq],
+            text=[f"£{entry_eq:,.0f}", f"+£{ebitda_expansion:,.0f}", f"+£{total_fcf:,.0f}", f"+£{terminal_assets:,.0f}", f"£{exit_eq:,.0f}"],
+            y=[entry_eq, ebitda_expansion, total_fcf, terminal_assets, 0],
             connector={"line":{"color":"rgb(63, 63, 63)"}},
             decreasing={"marker":{"color":"#FF4B4B"}},
             increasing={"marker":{"color":"#2ca02c"}},
             totals={"marker":{"color":"#1f77b4"}}
         ))
         
-        fig.update_layout(title="PE Value Creation Bridge (Exit Equity Reconciliation)", showlegend=False, height=500)
+        fig.update_layout(title="Standard LBO Value Creation Bridge (Optimized Strategy)", showlegend=False, height=500)
         st.plotly_chart(fig, use_container_width=True)
 
         col_a, col_b, col_c = st.columns(3)
-        col_a.metric("Total Equity Value Created", f"£{total_delta:,.0f}")
-        col_b.metric("MOIC Expansion", f"+{(lbo_results['Strategy& 100-Day Plan']['CF']['MOIC'] - lbo_results['Legacy (Baseline)']['CF']['MOIC']):.2f}x")
-        col_c.metric("Exit Enterprise Value", f"£{lbo_results['Strategy& 100-Day Plan']['CF']['Exit EV']:,.0f}", f"+£{delta_ev:,.0f}")
+        col_a.metric("Total Equity MOIC", f"{opt_lbo['CF']['MOIC']:.2f}x")
+        col_b.metric("Gross Profit to Equity", f"£{exit_eq - entry_eq:,.0f}")
+        col_c.metric("Exit Enterprise Value", f"£{opt_lbo['CF']['Exit EV']:,.0f}")
+        
+        st.markdown("---")
+        st.markdown("### Operational Value Drivers")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.info("**1. Value Engineering (Margin)**")
+            st.caption(f"Driven by the **{ve_savings*100:.1f}%** BOM reduction post-{ve_dev_weeks}-week lag. Directly expands Year 2 EBITDA, which scales Exit EV by {entry_multiple}x.")
+        with col2:
+            st.info("**2. Base-Surge (Inventory Cash)**")
+            st.caption("Driven by mathematically compressing the 10-week China safety stock buffer, using highly targeted 2-week Poland LTL top-ups. Generates hard FCF.")
+        with col3:
+            st.info("**3. Terms Optimization (AP Cash)**")
+            st.caption(f"Driven by extending standard supplier payment terms to **{dpo_days} days**. Physically shifts Working Capital leverage back to the PortCo.")
 
     with tab2:
         st.subheader("CFO View: GAAP 3-Statement Financial Rollout")
+        
         st.markdown("### 1. Income Statement (Hold Period)")
         is_data = {
             "Line Item": ["Revenue", "COGS", "SG&A Overhead", "OPEX (Holding/Freight/VE Invest)", "EBITDA"],
@@ -476,11 +481,31 @@ else:
         st.altair_chart(chart, use_container_width=True)
 
     with tab4:
-        st.subheader("The PE Value Creation Bridge")
+        st.subheader("Legacy vs. 100-Day Plan Comparison")
+        st.markdown("For reference and audit logic, this explicitly bridges the difference if the PE firm had kept the legacy management team versus executing the Strategy& plan.")
+        
         bridge_data = {
-            "Value Driver": ["1. Entry Equity", "2. Total FCF Generated", "3. Debt Paid Down", "4. Exit Enterprise Value", "5. Remaining Debt Subtracted", "FINAL EXIT EQUITY VALUE"],
-            "Legacy": [f"£{lbo_results['Legacy (Baseline)']['BS']['Equity 0']:,.0f}", f"£{lbo_results['Legacy (Baseline)']['CF']['Y1 FCF'] + lbo_results['Legacy (Baseline)']['CF']['Y2 FCF']:,.0f}", f"£{lbo_results['Legacy (Baseline)']['BS']['Debt 0'] - lbo_results['Legacy (Baseline)']['BS']['Debt 2']:,.0f}", f"£{lbo_results['Legacy (Baseline)']['CF']['Exit EV']:,.0f}", f"-£{lbo_results['Legacy (Baseline)']['BS']['Debt 2']:,.0f}", f"£{lbo_results['Legacy (Baseline)']['BS']['Equity 2']:,.0f}"],
-            "Opt 100-Day Plan": [f"£{lbo_results['Strategy& 100-Day Plan']['BS']['Equity 0']:,.0f}", f"£{lbo_results['Strategy& 100-Day Plan']['CF']['Y1 FCF'] + lbo_results['Strategy& 100-Day Plan']['CF']['Y2 FCF']:,.0f}", f"£{lbo_results['Strategy& 100-Day Plan']['BS']['Debt 0'] - lbo_results['Strategy& 100-Day Plan']['BS']['Debt 2']:,.0f}", f"£{lbo_results['Strategy& 100-Day Plan']['CF']['Exit EV']:,.0f}", f"-£{lbo_results['Strategy& 100-Day Plan']['BS']['Debt 2']:,.0f}", f"£{lbo_results['Strategy& 100-Day Plan']['BS']['Equity 2']:,.0f}"]
+            "Value Driver": ["1. Entry Equity", "2. Total FCF Generated", "3. Debt Paid Down", "4. Exit Enterprise Value", "5. Terminal Operating Cash", "6. Terminal Inventory Salvage", "7. Remaining LBO Debt", "FINAL EXIT EQUITY VALUE"],
+            "Legacy": [
+                f"£{lbo_results['Legacy (Baseline)']['BS']['Equity 0']:,.0f}", 
+                f"£{lbo_results['Legacy (Baseline)']['CF']['Y1 FCF'] + lbo_results['Legacy (Baseline)']['CF']['Y2 FCF']:,.0f}", 
+                f"£{lbo_results['Legacy (Baseline)']['BS']['Debt 0'] - lbo_results['Legacy (Baseline)']['BS']['Debt 2']:,.0f}", 
+                f"£{lbo_results['Legacy (Baseline)']['CF']['Exit EV']:,.0f}", 
+                f"£{lbo_results['Legacy (Baseline)']['BS']['Cash']:,.0f}", 
+                f"£{lbo_results['Legacy (Baseline)']['BS']['Inv 2'] * 0.9:,.0f}",
+                f"-£{lbo_results['Legacy (Baseline)']['BS']['Debt 2']:,.0f}", 
+                f"£{lbo_results['Legacy (Baseline)']['BS']['Equity 2']:,.0f}"
+            ],
+            "Opt 100-Day Plan": [
+                f"£{lbo_results['Strategy& 100-Day Plan']['BS']['Equity 0']:,.0f}", 
+                f"£{lbo_results['Strategy& 100-Day Plan']['CF']['Y1 FCF'] + lbo_results['Strategy& 100-Day Plan']['CF']['Y2 FCF']:,.0f}", 
+                f"£{lbo_results['Strategy& 100-Day Plan']['BS']['Debt 0'] - lbo_results['Strategy& 100-Day Plan']['BS']['Debt 2']:,.0f}", 
+                f"£{lbo_results['Strategy& 100-Day Plan']['CF']['Exit EV']:,.0f}", 
+                f"£{lbo_results['Strategy& 100-Day Plan']['BS']['Cash']:,.0f}", 
+                f"£{lbo_results['Strategy& 100-Day Plan']['BS']['Inv 2'] * 0.9:,.0f}",
+                f"-£{lbo_results['Strategy& 100-Day Plan']['BS']['Debt 2']:,.0f}", 
+                f"£{lbo_results['Strategy& 100-Day Plan']['BS']['Equity 2']:,.0f}"
+            ]
         }
         st.table(pd.DataFrame(bridge_data).set_index("Value Driver"))
 

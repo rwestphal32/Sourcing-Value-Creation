@@ -70,7 +70,7 @@ def process_uploaded_file(df):
         }
     return custom_products, custom_demand, custom_eco
 
-# --- 3. SESSION STATE INITIALIZATION (BUG FIXED) ---
+# --- 3. SESSION STATE INITIALIZATION ---
 if 'demand_locked' not in st.session_state:
     st.session_state.demand_locked = False
 if 'actual_demand' not in st.session_state:
@@ -374,9 +374,48 @@ else:
     results = st.session_state.results
     lbo_results = st.session_state.lbo_results
 
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 3-Statement LBO", "📦 Ending Inventory", "📈 Value Bridge", "📥 Export"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🚀 Executive Summary", "📊 3-Statement LBO", "📦 Ending Inventory", "📈 Value Bridge", "📥 Export"])
 
     with tab1:
+        st.subheader("100-Day Plan: Initiative Value Tracker")
+        
+        delta_ev = lbo_results['Strategy& 100-Day Plan']['CF']['Exit EV'] - lbo_results['Legacy (Baseline)']['CF']['Exit EV']
+        delta_moic = lbo_results['Strategy& 100-Day Plan']['CF']['MOIC'] - lbo_results['Legacy (Baseline)']['CF']['MOIC']
+        leg_debt_paid = lbo_results['Legacy (Baseline)']['BS']['Debt 0'] - lbo_results['Legacy (Baseline)']['BS']['Debt 2']
+        opt_debt_paid = lbo_results['Strategy& 100-Day Plan']['BS']['Debt 0'] - lbo_results['Strategy& 100-Day Plan']['BS']['Debt 2']
+        delta_debt_paydown = opt_debt_paid - leg_debt_paid
+        
+        col_a, col_b, col_c = st.columns(3)
+        col_a.metric("Total Enterprise Value Created", f"£{delta_ev:,.0f}")
+        col_b.metric("MOIC Expansion", f"+{delta_moic:.2f}x")
+        col_c.metric("Additional Debt Paid Down", f"£{delta_debt_paydown:,.0f}")
+        
+        st.markdown("---")
+        st.markdown("### How the Value Was Created")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.info("**1. Value Engineering (EBITDA Lift)**")
+            ve_savings_y2 = abs(lbo_results['Legacy (Baseline)']['IS']['Y2 COGS']) - abs(lbo_results['Strategy& 100-Day Plan']['IS']['Y2 COGS'])
+            ev_impact = ve_savings_y2 * entry_multiple
+            st.metric("Net Y2 Run-Rate COGS Savings", f"£{ve_savings_y2:,.0f}")
+            st.metric("Exit EV Expansion (x Multiple)", f"£{ev_impact:,.0f}")
+            st.caption(f"Driven by a **{ve_savings*100:.1f}%** BOM reduction post-{ve_dev_weeks}-week R&D lag. (Net of any Nearshore LTL freight premiums).")
+            
+        with col2:
+            st.info("**2. Base-Surge (Inventory NWC)**")
+            inv_release = lbo_results['Legacy (Baseline)']['BS']['Inv 2'] - lbo_results['Strategy& 100-Day Plan']['BS']['Inv 2']
+            st.metric("Trapped Capital Released", f"£{inv_release:,.0f}")
+            st.caption("Driven by mathematically reducing the 10-week China safety stock floor via highly targeted 2-week Poland LTL top-ups.")
+            
+        with col3:
+            st.info("**3. Terms Optimization (AP NWC)**")
+            ap_retention = abs(lbo_results['Strategy& 100-Day Plan']['BS']['AP 2']) - abs(lbo_results['Legacy (Baseline)']['BS']['AP 2'])
+            st.metric("Operating Cash Retained", f"£{ap_retention:,.0f}")
+            st.caption(f"Driven by negotiating standard supplier payment terms from 30 days up to **{dpo_days} days**, physically shifting leverage to the supply base.")
+
+    with tab2:
         st.subheader("CFO View: GAAP 3-Statement Financial Rollout")
         
         st.markdown("### 1. Income Statement (Hold Period)")
@@ -408,7 +447,7 @@ else:
             }
             st.table(pd.DataFrame(cf_data).set_index("Line Item"))
 
-    with tab2:
+    with tab3:
         st.subheader("Operations: Ending Inventory Sawtooth")
         view_prod = st.selectbox("Select Product to Graph:", ACTIVE_PRODUCTS)
         
@@ -426,7 +465,7 @@ else:
         ).properties(height=450)
         st.altair_chart(chart, use_container_width=True)
 
-    with tab3:
+    with tab4:
         st.subheader("The PE Value Creation Bridge")
         bridge_data = {
             "Value Driver": ["1. Entry Equity", "2. Total FCF Generated", "3. Debt Paid Down", "4. Exit Enterprise Value", "5. Remaining Debt Subtracted", "FINAL EXIT EQUITY VALUE"],
@@ -435,6 +474,6 @@ else:
         }
         st.table(pd.DataFrame(bridge_data).set_index("Value Driver"))
 
-    with tab4:
+    with tab5:
         st.subheader("Full CFO Audit Download")
         st.download_button("📥 Download PE Audit Ledger (.xlsx)", data=generate_excel_export(results, lbo_results), file_name="PE_100_Day_Audit.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
